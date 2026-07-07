@@ -5,6 +5,7 @@
  */
 
 #include "odfs/api.h"
+#include "odfs/printf.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,8 +77,14 @@ int main(int argc, char **argv)
 
         err = odfs_read(&mnt, &node, offset, buf, &len);
         if (err != ODFS_OK) {
-            fprintf(stderr, "error: read at offset %llu: %s\n",
-                    (unsigned long long)offset, odfs_err_str(err));
+            char offbuf[24];
+            /* AMIX (SVR4) libc printf has no C99 "ll": format the 64-bit
+             * offset through the bounded formatter so this error path does
+             * not misread the trailing "%s" pointer and crash on m68k. */
+            odfs_snprintf(offbuf, sizeof(offbuf), "%llu",
+                          (unsigned long long)offset);
+            fprintf(stderr, "error: read at offset %s: %s\n",
+                    offbuf, odfs_err_str(err));
             break;
         }
         if (len == 0)

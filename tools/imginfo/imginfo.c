@@ -5,6 +5,7 @@
  */
 
 #include "odfs/api.h"
+#include "odfs/printf.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -22,6 +23,7 @@ int main(int argc, char **argv)
     odfs_mount_opts_t opts;
     odfs_log_state_t log;
     odfs_err_t err;
+    char sizebuf[24];
 
     if (argc < 2) {
         fprintf(stderr, "usage: imginfo <image.iso>\n");
@@ -38,9 +40,17 @@ int main(int argc, char **argv)
     printf("image: %s\n", argv[1]);
     printf("sector size: %u\n", odfs_media_sector_size(&media));
     printf("sector count: %u\n", odfs_media_sector_count(&media));
-    printf("total size: %llu bytes\n",
-           (unsigned long long)odfs_media_sector_size(&media) *
-           odfs_media_sector_count(&media));
+    /*
+     * Render the 64-bit product through the tree's bounded formatter: the
+     * AMIX (SVR4) libc printf has no C99 "ll" support, so "%llu" there reads
+     * only the argument's high 32 bits (0 on big-endian m68k) and prints
+     * "0 bytes". odfs_snprintf routes to vsnprintf on host/Amiga, so output
+     * is unchanged there.
+     */
+    odfs_snprintf(sizebuf, sizeof(sizebuf), "%llu",
+                  (unsigned long long)odfs_media_sector_size(&media) *
+                  odfs_media_sector_count(&media));
+    printf("total size: %s bytes\n", sizebuf);
 
     /* try to mount and report detected formats */
     odfs_log_init(&log);
