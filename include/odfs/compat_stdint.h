@@ -54,6 +54,19 @@ typedef unsigned long long uint64_t;
 #endif
 
 /*
+ * uintptr_t — an unsigned integer wide enough to hold a pointer. Used by
+ * the %p path of platform/amiga/printf_local.c, the bounded formatter the
+ * AMIX build reuses in place of the sysroot's (absent) vsnprintf. Prefer
+ * the compiler's own width builtin when it advertises one; otherwise fall
+ * back to the m68k SVR4 ABI's 32-bit pointer (unsigned long is 32-bit here).
+ */
+#if defined(__UINTPTR_TYPE__)
+typedef __UINTPTR_TYPE__ uintptr_t;
+#else
+typedef unsigned long uintptr_t;
+#endif
+
+/*
  * printf conversion macros actually referenced by the tree: PRIu16,
  * PRIu32, PRIu64, PRIx32. With the mapping above, uint16_t/uint32_t are
  * (unsigned) short/int, so they need no length modifier; uint64_t is

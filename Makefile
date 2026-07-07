@@ -648,7 +648,8 @@ AMIX_INCLUDES = -I platform/amix/compat -I include -I backends
 AMIX_DEFS     = -DODFS_PLATFORM_AMIX
 AMIX_CFLAGS   = -O2 $(AMIX_DEFS)
 
-AMIX_LIB_SRCS = $(CORE_SRCS) platform/amix/amix_file_media.c
+AMIX_LIB_SRCS = $(CORE_SRCS) platform/amix/amix_file_media.c \
+                platform/amiga/printf_local.c
 AMIX_LIB_OBJS = $(patsubst %.c,$(AMIX_BUILD)/%.o,$(AMIX_LIB_SRCS))
 
 AMIX_TOOL_NAMES = imginfo imgls imgcat

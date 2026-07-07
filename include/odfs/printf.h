@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdio.h>
 
-#ifdef AMIGA
+#if defined(AMIGA) || defined(ODFS_PLATFORM_AMIX)
 
 int odfs_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 #ifdef __GNUC__
