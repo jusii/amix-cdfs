@@ -296,6 +296,7 @@ AMIGAOS4_README      = docs/ODFileSystem_OS4.readme
 # ==================================================================
 
 .PHONY: all host amiga amiga-test amiga-020 adf rom rom-test lib tests tools fuzz
+.PHONY: amix amix-lib amix-tools
 .PHONY: check golden-check malformed-check fuzz-check integration-check
 .PHONY: clean size amigaos3-lha amigaos4-lha
 
@@ -610,6 +611,77 @@ $(KICKSTART_MODULE): $(AMIGA_BUILD)/platform/amiga/os4/start.o $(AMIGA_BUILD)/li
 	@rm -f $@.unstripped
 endif
 
+
+# ==================================================================
+# AMIX (SVR4/m68k) userspace cross build
+# ==================================================================
+#
+# "ISO on a slice, no kernel relink" milestone: cross-builds libodfs.a
+# plus the imgls/imgcat/imginfo tools for AMIX, pairing the shared core
+# with the raw-device media backend (platform/amix/amix_file_media.c) —
+# the exact parallel of the host build, which pairs the same core with
+# platform/host/file_media.c. Artifacts land under build/amix/ so they
+# never collide with the host or Amiga builds; this target is fully
+# independent of default/host/check.
+#
+# The AMIX sysroot ships no <stdint.h>/<inttypes.h>, so platform/amix/
+# compat is placed ahead of the (stdint-less) sysroot on the include
+# path: the shared code's <stdint.h>/<inttypes.h> resolve to the shims
+# there, which forward to include/odfs/compat_stdint.h. The cross gcc is
+# a bash wrapper that already bakes in --sysroot and the crt/libc link,
+# so no -sysroot flag is needed here.
+
+AMIX_CROSS_PREFIX ?= /home/jalanara/opt/amix-cross
+AMIX_CC     ?= $(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-gcc
+AMIX_AR     ?= $(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-ar
+
+AMIX_BUILD  = build/amix
+
+# compat/ must precede the (stdint-less) sysroot on the search path.
+AMIX_INCLUDES = -I platform/amix/compat -I include -I backends
+AMIX_DEFS     = -DODFS_PLATFORM_AMIX
+AMIX_CFLAGS   = -O2 $(AMIX_DEFS)
+
+AMIX_LIB_SRCS = $(CORE_SRCS) platform/amix/amix_file_media.c
+AMIX_LIB_OBJS = $(patsubst %.c,$(AMIX_BUILD)/%.o,$(AMIX_LIB_SRCS))
+
+AMIX_TOOL_NAMES = imginfo imgls imgcat
+AMIX_TOOL_BINS  = $(patsubst %,$(AMIX_BUILD)/tools/%,$(AMIX_TOOL_NAMES))
+
+amix: amix-lib amix-tools
+	@echo "  AMIX build complete: $(AMIX_BUILD)/libodfs.a + $(AMIX_TOOL_NAMES)"
+
+amix-lib: $(AMIX_BUILD)/libodfs.a
+
+amix-tools: $(AMIX_TOOL_BINS)
+
+$(AMIX_BUILD)/libodfs.a: $(AMIX_LIB_OBJS)
+	@mkdir -p $(@D)
+	@echo "  AR    $@ (amix)"
+	@$(AMIX_AR) rcs $@ $^
+
+$(AMIX_BUILD)/%.o: %.c
+	@mkdir -p $(@D)
+	@echo "  AMIXCC $<"
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -c -o $@ $<
+
+# One-shot compile+link per tool (mirrors the host tool rules). Passing
+# -lodfs suppresses the wrapper's implicit libc, so -lc is explicit and
+# ordered after -lodfs (which depends on it).
+$(AMIX_BUILD)/tools/imginfo: tools/imginfo/imginfo.c $(AMIX_BUILD)/libodfs.a
+	@mkdir -p $(@D)
+	@echo "  AMIXCC $<"
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc
+
+$(AMIX_BUILD)/tools/imgls: tools/imgls/imgls.c $(AMIX_BUILD)/libodfs.a
+	@mkdir -p $(@D)
+	@echo "  AMIXCC $<"
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc
+
+$(AMIX_BUILD)/tools/imgcat: tools/imgcat/imgcat.c $(AMIX_BUILD)/libodfs.a
+	@mkdir -p $(@D)
+	@echo "  AMIXCC $<"
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc
 
 # ---- clean ----
 

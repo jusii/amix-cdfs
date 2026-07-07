@@ -11,6 +11,15 @@
 
 #include <stddef.h>
 
+#if defined(ODFS_PLATFORM_AMIX)
+/*
+ * AMIX (SVR4/m68k) userspace uses the plain libc malloc/free path in the
+ * #else branch below — never the Amiga AllocVec/FreeVec path. This holds
+ * because ODFS_PLATFORM_AMIGA is 0 on AMIX; the guard here only documents
+ * that deliberate choice and emits nothing.
+ */
+#endif
+
 #if ODFS_PLATFORM_AMIGA
 
 #include "amiga_target_compat.h"

@@ -154,6 +154,19 @@
   #define ODFS_PLATFORM_AMIGA 0
 #endif
 
+#if defined(ODFS_PLATFORM_AMIX)
+  /*
+   * AMIX (SVR4/m68k) userspace. The sysroot ships no <stdint.h> or
+   * <inttypes.h>, so pull the fixed-width types + PRI* macros in here
+   * (matching the tree's practice of getting them from an include).
+   */
+  #include "odfs/compat_stdint.h"
+  /* AMIX is its own platform, not the host template. */
+  #ifndef ODFS_PLATFORM_HOST
+    #define ODFS_PLATFORM_HOST 0
+  #endif
+#endif
+
 /* host builds for testing */
 #ifndef ODFS_PLATFORM_HOST
   #if !ODFS_PLATFORM_AMIGA
