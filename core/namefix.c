@@ -127,6 +127,7 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
 {
     char base[ODFS_NAME_MAX];
     unsigned int hash;
+    unsigned int ordinal;
 
     if (name_size == 0)
         return ODFS_ERR_INVAL;
@@ -138,7 +139,7 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
     memcpy(base, name, name_size);
     base[name_size - 1] = '\0';
 
-    for (unsigned int ordinal = 2; ordinal < 1000000; ordinal++) {
+    for (ordinal = 2; ordinal < 1000000; ordinal++) {
         /* build "~<ordinal>" by hand: this is the only formatter use in
          * the ROM link, and going through odfs_snprintf() would keep
          * the whole printf_local formatter resident for one suffix */

@@ -423,6 +423,13 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         uint32_t sector_off = offset % ISO_SECTOR_SIZE;
         const uint8_t *sector;
         odfs_err_t err;
+        const uint8_t *rec;
+        size_t avail;
+        odfs_node_t node;
+        const uint8_t *sua;
+        size_t sua_len;
+        int consumed;
+        uint32_t next_offset;
 
         err = odfs_cache_read(cache, sector_lba, &sector);
         if (err != ODFS_OK) {
@@ -430,8 +437,8 @@ static odfs_err_t iso_readdir(void *backend_ctx,
             return err;
         }
 
-        const uint8_t *rec = sector + sector_off;
-        size_t avail = ISO_SECTOR_SIZE - sector_off;
+        rec = sector + sector_off;
+        avail = ISO_SECTOR_SIZE - sector_off;
 
         /* zero-length record means skip to next sector */
         if (rec[0] == 0) {
@@ -439,13 +446,12 @@ static odfs_err_t iso_readdir(void *backend_ctx,
             continue;
         }
 
-        odfs_node_t node;
-        const uint8_t *sua = NULL;
-        size_t sua_len = 0;
-        int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
-                                            &ctx->next_node_id, lowercase,
-                                            ctx->high_sierra,
-                                            &node, &sua, &sua_len);
+        sua = NULL;
+        sua_len = 0;
+        consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
+                                        &ctx->next_node_id, lowercase,
+                                        ctx->high_sierra,
+                                        &node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
@@ -453,7 +459,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
 
         node.parent_id = dir->id;
 
-        uint32_t next_offset = offset + (uint32_t)consumed;
+        next_offset = offset + (uint32_t)consumed;
 
         /* ISO Level 3: fold multi-extent continuation records into the node */
         if (node.kind == ODFS_NODE_FILE &&
@@ -545,9 +551,11 @@ static odfs_err_t iso_read(void *backend_ctx,
                             void *buf,
                             size_t *len)
 {
+    size_t want;
+
     (void)backend_ctx;
     (void)log;
-    size_t want = *len;
+    want = *len;
 
     if (offset >= file->size) {
         *len = 0;
@@ -648,34 +656,40 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         uint32_t sector_off = offset % ISO_SECTOR_SIZE;
         const uint8_t *sector;
         odfs_err_t err;
+        const uint8_t *rec;
+        size_t avail;
+        odfs_node_t node;
+        const uint8_t *sua;
+        size_t sua_len;
+        int consumed;
+        rr_info_t rr;
+        size_t tlen;
 
         err = odfs_cache_read(cache, sector_lba, &sector);
         if (err != ODFS_OK)
             return err;
 
-        const uint8_t *rec = sector + sector_off;
-        size_t avail = ISO_SECTOR_SIZE - sector_off;
+        rec = sector + sector_off;
+        avail = ISO_SECTOR_SIZE - sector_off;
 
         if (rec[0] == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
 
-        odfs_node_t node;
-        const uint8_t *sua = NULL;
-        size_t sua_len = 0;
-        int consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
-                                            &ctx->next_node_id,
-                                            ctx->lowercase,
-                                            ctx->high_sierra,
-                                            &node, &sua, &sua_len);
+        sua = NULL;
+        sua_len = 0;
+        consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
+                                        &ctx->next_node_id,
+                                        ctx->lowercase,
+                                        ctx->high_sierra,
+                                        &node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
         offset += (uint32_t)consumed;
 
-        rr_info_t rr;
         memset(&rr, 0, sizeof(rr));
         if (sua && sua_len > 0) {
             rr_parse(sua, sua_len, ctx->rr_skip, &rr, cache);
@@ -697,7 +711,7 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         if (!rr.is_symlink || rr.symlink_target[0] == '\0')
             return ODFS_ERR_UNSUPPORTED;
 
-        size_t tlen = strlen(rr.symlink_target);
+        tlen = strlen(rr.symlink_target);
         if (tlen >= buf_size)
             return ODFS_ERR_NAME_TOO_LONG;
         memcpy(buf, rr.symlink_target, tlen + 1);

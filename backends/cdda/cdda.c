@@ -109,8 +109,9 @@ static uint32_t cdda_total_seconds(const cdda_context_t *ctx)
 static uint32_t cdda_disc_id(const cdda_context_t *ctx)
 {
     uint32_t sum = 0;
+    int i;
 
-    for (int i = 0; i < ctx->track_count; i++)
+    for (i = 0; i < ctx->track_count; i++)
         sum += cdda_sum_digits(cdda_track_offset_frames(&ctx->tracks[i]) /
                                CDDA_FRAMES_PER_SEC);
 
@@ -122,8 +123,9 @@ static uint32_t cdda_disc_id(const cdda_context_t *ctx)
 static void cdda_format_hex32(char *buf, uint32_t value)
 {
     static const char hex[] = "0123456789abcdef";
+    int i;
 
-    for (int i = 7; i >= 0; i--) {
+    for (i = 7; i >= 0; i--) {
         buf[i] = hex[value & 0x0fu];
         value >>= 4;
     }
@@ -174,6 +176,7 @@ static void cdda_generate_cddb(cdda_context_t *ctx)
     size_t used = 0;
     uint32_t disc_id;
     uint32_t total_seconds;
+    int i;
 
     if (ctx->track_count == 0)
         return;
@@ -199,7 +202,7 @@ static void cdda_generate_cddb(cdda_context_t *ctx)
         return;
     }
 
-    for (int i = 0; i < ctx->track_count; i++) {
+    for (i = 0; i < ctx->track_count; i++) {
         if (!cdda_appendf(text, text_size, &used,
                           "OFFSET%02d=%" PRIu32 "\n",
                           i + 1,
@@ -216,7 +219,7 @@ static void cdda_generate_cddb(cdda_context_t *ctx)
         return;
     }
 
-    for (int i = 0; i < ctx->track_count; i++) {
+    for (i = 0; i < ctx->track_count; i++) {
         if (!cdda_appendf(text, text_size, &used,
                           " %" PRIu32,
                           cdda_track_offset_frames(&ctx->tracks[i]))) {
@@ -275,11 +278,12 @@ static size_t cdda_sanitize_ascii(char *dst, size_t dst_size,
                                   const uint8_t *src, size_t src_size)
 {
     size_t used = 0;
+    size_t i;
 
     if (dst_size == 0)
         return 0;
 
-    for (size_t i = 0; i < src_size && used + 1 < dst_size; i++) {
+    for (i = 0; i < src_size && used + 1 < dst_size; i++) {
         uint8_t ch = src[i];
 
         if (ch == '\r' || ch == '\n' || ch == '\t')
@@ -298,11 +302,12 @@ static size_t cdda_hex_encode(char *dst, size_t dst_size,
 {
     static const char hex[] = "0123456789ABCDEF";
     size_t used = 0;
+    size_t i;
 
     if (dst_size == 0)
         return 0;
 
-    for (size_t i = 0; i < src_size && used + 2 < dst_size; i++) {
+    for (i = 0; i < src_size && used + 2 < dst_size; i++) {
         dst[used++] = hex[src[i] >> 4];
         dst[used++] = hex[src[i] & 0x0f];
     }
@@ -388,6 +393,7 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
     uint8_t *field_buf = NULL;
     size_t field_cap;
     odfs_err_t err;
+    size_t i;
 
     if (!ctx->media)
         return;
@@ -420,7 +426,7 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
         return;
     }
 
-    for (size_t i = 0; i < pack_count; i++) {
+    for (i = 0; i < pack_count; i++) {
         const uint8_t *pack = raw + 4u + i * 18u;
         uint8_t type = pack[0];
         uint8_t track = pack[1];
@@ -708,6 +714,7 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
     cdda_context_t *ctx;
     int audio_count = 0;
     uint32_t header_size;
+    int i;
 
     ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx)
@@ -720,7 +727,7 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
     ctx->media = media;
     header_size = cdda_header_size(ctx->file_format);
 
-    for (int i = 0; i < toc->session_count && audio_count < CDDA_MAX_TRACKS; i++) {
+    for (i = 0; i < toc->session_count && audio_count < CDDA_MAX_TRACKS; i++) {
         uint32_t start = toc->sessions[i].start_lba;
         uint32_t length = toc->sessions[i].length;
 
@@ -818,20 +825,24 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
                                  uint32_t *resume_offset)
 {
     cdda_context_t *ctx = backend_ctx;
+    int start;
+    int metadata_count;
+    int i;
+    odfs_err_t err;
     (void)cache;
     (void)log;
     (void)dir;
 
-    int start = (resume_offset && *resume_offset) ? (int)*resume_offset : 0;
-    int metadata_count = cdda_metadata_count(ctx);
+    start = (resume_offset && *resume_offset) ? (int)*resume_offset : 0;
+    metadata_count = cdda_metadata_count(ctx);
 
-    for (int i = start; i < metadata_count; i++) {
+    for (i = start; i < metadata_count; i++) {
         odfs_node_t node;
 
         if (!cdda_fill_metadata_node(ctx, i, &node))
             continue;
 
-        odfs_err_t err = callback(&node, cb_ctx);
+        err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
             if (resume_offset)
                 *resume_offset = (uint32_t)i;
@@ -839,7 +850,7 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
         }
     }
 
-    for (int i = start - metadata_count; i < ctx->track_count; i++) {
+    for (i = start - metadata_count; i < ctx->track_count; i++) {
         odfs_node_t node;
         if (i < 0)
             continue;
@@ -856,7 +867,7 @@ static odfs_err_t cdda_readdir(void *backend_ctx,
         cdda_track_name(ctx->tracks[i].number, ctx->file_format,
                         node.name, sizeof(node.name));
 
-        odfs_err_t err = callback(&node, cb_ctx);
+        err = callback(&node, cb_ctx);
         if (err != ODFS_OK) {
             if (resume_offset)
                 *resume_offset = (uint32_t)(metadata_count + i);
@@ -882,11 +893,17 @@ static odfs_err_t cdda_read(void *backend_ctx,
                               size_t *len)
 {
     cdda_context_t *ctx = backend_ctx;
+    int track_idx;
+    cdda_track_t *trk;
+    uint32_t header_size;
+    size_t want;
+    size_t done;
+    uint8_t *out;
     (void)cache;
     (void)log;
 
     if (file->id == CDDA_CDDB_NODE_ID) {
-        size_t want = *len;
+        want = *len;
 
         if (!ctx->cddb_text || offset >= ctx->cddb_size) {
             *len = 0;
@@ -901,7 +918,7 @@ static odfs_err_t cdda_read(void *backend_ctx,
     }
 
     if (file->id == CDDA_CDTEXT_NODE_ID) {
-        size_t want = *len;
+        want = *len;
 
         if (!ctx->cdtext_text || offset >= ctx->cdtext_size) {
             *len = 0;
@@ -915,17 +932,17 @@ static odfs_err_t cdda_read(void *backend_ctx,
         return ODFS_OK;
     }
 
-    int track_idx = (int)file->extent.lba - 2;
+    track_idx = (int)file->extent.lba - 2;
     if (track_idx < 0 || track_idx >= ctx->track_count) {
         *len = 0;
         return ODFS_ERR_NOT_FOUND;
     }
 
-    cdda_track_t *trk = &ctx->tracks[track_idx];
-    uint32_t header_size = cdda_header_size(ctx->file_format);
-    size_t want = *len;
-    size_t done = 0;
-    uint8_t *out = buf;
+    trk = &ctx->tracks[track_idx];
+    header_size = cdda_header_size(ctx->file_format);
+    want = *len;
+    done = 0;
+    out = buf;
 
     if (offset >= trk->file_size) {
         *len = 0;
@@ -937,10 +954,12 @@ static odfs_err_t cdda_read(void *backend_ctx,
     /* serve synthesized header bytes if offset is within the header */
     if (offset < header_size) {
         uint8_t hdr[CDDA_AIFF_HEADER_SIZE];
+        size_t hdr_avail;
+        size_t chunk;
         cdda_build_header(ctx->file_format, hdr, (uint32_t)trk->data_size);
 
-        size_t hdr_avail = header_size - (size_t)offset;
-        size_t chunk = (hdr_avail < want) ? hdr_avail : want;
+        hdr_avail = header_size - (size_t)offset;
+        chunk = (hdr_avail < want) ? hdr_avail : want;
         memcpy(out, hdr + offset, chunk);
         done += chunk;
     }
@@ -954,6 +973,7 @@ static odfs_err_t cdda_read(void *backend_ctx,
         uint32_t audio_pos;
         uint32_t frame_num;
         uint32_t frame_off;
+        uint32_t start_frame;
 
         /* an audio track is far below 4 GiB, so 32-bit math suffices;
          * this keeps the 64-bit division helpers out of the binary */
@@ -964,7 +984,7 @@ static odfs_err_t cdda_read(void *backend_ctx,
         audio_pos = (uint32_t)audio_pos64;
         frame_num = audio_pos / CDDA_FRAME_SIZE;
         frame_off = audio_pos % CDDA_FRAME_SIZE;
-        uint32_t start_frame = trk->start_lba + frame_num;
+        start_frame = trk->start_lba + frame_num;
 
         if (!ctx->media || !ctx->media->ops->read_audio) {
             ODFS_ERROR(log, ODFS_SUB_CDDA,
@@ -1007,6 +1027,8 @@ static odfs_err_t cdda_read(void *backend_ctx,
             odfs_err_t err = odfs_media_read_audio(ctx->media,
                                                    start_frame, 1,
                                                    frame_buf);
+            size_t avail;
+            size_t chunk;
             if (err != ODFS_OK) {
                 ODFS_ERROR(log, ODFS_SUB_CDDA,
                            "audio read failed track=%d lba=%" PRIu32
@@ -1019,8 +1041,8 @@ static odfs_err_t cdda_read(void *backend_ctx,
             if (ctx->file_format == CDDA_FILE_FORMAT_AIFF)
                 cdda_byteswap_samples(frame_buf, sizeof(frame_buf));
 
-            size_t avail = CDDA_FRAME_SIZE - frame_off;
-            size_t chunk = (avail < want - done) ? avail : want - done;
+            avail = CDDA_FRAME_SIZE - frame_off;
+            chunk = (avail < want - done) ? avail : want - done;
             memcpy(out + done, frame_buf + frame_off, chunk);
             done += chunk;
         }
@@ -1042,6 +1064,7 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
                                 odfs_node_t *out)
 {
     cdda_context_t *ctx = backend_ctx;
+    int i;
     (void)cache;
     (void)log;
     (void)dir;
@@ -1058,7 +1081,7 @@ static odfs_err_t cdda_lookup(void *backend_ctx,
         return ODFS_ERR_NOT_FOUND;
     }
 
-    for (int i = 0; i < ctx->track_count; i++) {
+    for (i = 0; i < ctx->track_count; i++) {
         char tname[32];
         cdda_track_name(ctx->tracks[i].number, ctx->file_format,
                         tname, sizeof(tname));
@@ -1109,13 +1132,15 @@ static uint32_t cdda_get_volume_size(void *backend_ctx)
 {
     cdda_context_t *ctx = backend_ctx;
     uint64_t bytes = 0;
+    int i;
+    uint64_t blocks;
 
     bytes += ctx->cddb_size;
     bytes += ctx->cdtext_size;
-    for (int i = 0; i < ctx->track_count; i++)
+    for (i = 0; i < ctx->track_count; i++)
         bytes += ctx->tracks[i].file_size;
 
-    uint64_t blocks = (bytes + 2047u) / 2048u;
+    blocks = (bytes + 2047u) / 2048u;
     return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;
 }
 

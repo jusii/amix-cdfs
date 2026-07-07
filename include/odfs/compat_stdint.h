@@ -72,6 +72,50 @@ typedef unsigned long long uint64_t;
 #define PRIu64 "llu"
 #endif
 
+/*
+ * Limit macros. Fixed by width regardless of which typedef branch above is
+ * taken, so they are spelled as plain integer constants of the right width
+ * (int/long are 32-bit, long long is 64-bit on this ABI). The tree uses
+ * UINT32_MAX and INT16_MIN; the rest complete the standard set a <stdint.h>
+ * is expected to provide.
+ */
+#ifndef INT8_MIN
+#define INT8_MIN   (-128)
+#endif
+#ifndef INT8_MAX
+#define INT8_MAX   127
+#endif
+#ifndef UINT8_MAX
+#define UINT8_MAX  255
+#endif
+#ifndef INT16_MIN
+#define INT16_MIN  (-32767 - 1)
+#endif
+#ifndef INT16_MAX
+#define INT16_MAX  32767
+#endif
+#ifndef UINT16_MAX
+#define UINT16_MAX 65535
+#endif
+#ifndef INT32_MIN
+#define INT32_MIN  (-2147483647 - 1)
+#endif
+#ifndef INT32_MAX
+#define INT32_MAX  2147483647
+#endif
+#ifndef UINT32_MAX
+#define UINT32_MAX 4294967295U
+#endif
+#ifndef INT64_MIN
+#define INT64_MIN  (-9223372036854775807LL - 1)
+#endif
+#ifndef INT64_MAX
+#define INT64_MAX  9223372036854775807LL
+#endif
+#ifndef UINT64_MAX
+#define UINT64_MAX 18446744073709551615ULL
+#endif
+
 #endif /* ODFS_PLATFORM_AMIX */
 
 #endif /* ODFS_COMPAT_STDINT_H */

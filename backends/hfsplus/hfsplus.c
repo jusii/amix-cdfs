@@ -31,17 +31,25 @@
 
 static void hfsp_parse_date(uint32_t mac_secs, odfs_timestamp_t *ts)
 {
+    static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    uint32_t unix_secs;
+    uint32_t days;
+    uint32_t rem;
+    int y;
+    int leap;
+    int m;
+
     memset(ts, 0, sizeof(*ts));
     if (mac_secs < HFSP_MAC_EPOCH)
         return;
-    uint32_t unix_secs = mac_secs - HFSP_MAC_EPOCH;
-    uint32_t days = unix_secs / 86400;
-    uint32_t rem = unix_secs % 86400;
+    unix_secs = mac_secs - HFSP_MAC_EPOCH;
+    days = unix_secs / 86400;
+    rem = unix_secs % 86400;
     ts->hour = rem / 3600;
     ts->minute = (rem % 3600) / 60;
     ts->second = rem % 60;
 
-    int y = 1970;
+    y = 1970;
     while (1) {
         int yd = 365 + ((y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0);
         if (days < (uint32_t)yd) break;
@@ -49,9 +57,7 @@ static void hfsp_parse_date(uint32_t mac_secs, odfs_timestamp_t *ts)
         y++;
     }
     ts->year = y;
-    static const int mdays[] = {31,28,31,30,31,30,31,31,30,31,30,31};
-    int leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
-    int m;
+    leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
     for (m = 0; m < 12; m++) {
         int md = mdays[m] + (m == 1 ? leap : 0);
         if (days < (uint32_t)md) break;
@@ -64,10 +70,12 @@ static void hfsp_parse_date(uint32_t mac_secs, odfs_timestamp_t *ts)
 /* parse fork data from 80 bytes on disc */
 static void hfsp_parse_fork(const uint8_t *p, hfsp_fork_t *f)
 {
+    int i;
+
     f->logical_size = hfsp_be64(&p[0]);
     f->clump_size   = hfsp_be32(&p[8]);
     f->total_blocks = hfsp_be32(&p[12]);
-    for (int i = 0; i < 8; i++) {
+    for (i = 0; i < 8; i++) {
         f->extents[i].start_block = hfsp_be32(&p[16 + i * 8]);
         f->extents[i].block_count = hfsp_be32(&p[16 + i * 8 + 4]);
     }
@@ -88,8 +96,9 @@ static odfs_err_t hfsp_read_fork(const hfsplus_context_t *ctx,
 {
     size_t done = 0;
     uint64_t ext_offset = 0;
+    int i;
 
-    for (int i = 0; i < 8 && done < len; i++) {
+    for (i = 0; i < 8 && done < len; i++) {
         uint64_t ext_bytes = (uint64_t)fork->extents[i].block_count * ctx->block_size;
         if (ext_bytes == 0) break;
 
@@ -103,9 +112,10 @@ static odfs_err_t hfsp_read_fork(const hfsplus_context_t *ctx,
                 const uint8_t *sector;
 
                 odfs_err_t err = odfs_cache_read(cache, lba, &sector);
+                size_t chunk;
                 if (err != ODFS_OK) return err;
 
-                size_t chunk = 2048 - lba_off;
+                chunk = 2048 - lba_off;
                 if (chunk > len - done) chunk = len - done;
                 if (chunk > ext_bytes - off_in_ext) chunk = (size_t)(ext_bytes - off_in_ext);
 
@@ -167,9 +177,10 @@ static void hfsp_decode_name(const uint8_t *uname, uint16_t ulen,
     /* uname is big-endian UTF-16 chars, ulen is number of chars */
     size_t byte_len = (size_t)ulen * 2;
     size_t out_len;
+    size_t i;
     odfs_ucs2be_to_utf8(uname, byte_len, dst, dst_size, &out_len);
     /* replace ':' with '.' (Mac path separator) */
-    for (size_t i = 0; i < out_len; i++)
+    for (i = 0; i < out_len; i++)
         if (dst[i] == ':') dst[i] = '.';
 }
 
@@ -189,6 +200,8 @@ static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
      */
     const uint8_t *sector;
     uint64_t base = (uint64_t)session_start * 2048;
+    uint32_t lba;
+    int off;
 
     /* try byte 1024 (within first 2048-byte sector) */
     if (odfs_cache_read(cache, session_start, &sector) == ODFS_OK) {
@@ -200,10 +213,10 @@ static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
     }
 
     /* scan first 256K for the signature */
-    for (uint32_t lba = session_start; lba < session_start + 128; lba++) {
+    for (lba = session_start; lba < session_start + 128; lba++) {
         if (odfs_cache_read(cache, lba, &sector) != ODFS_OK)
             continue;
-        for (int off = 0; off <= 2048 - 2; off += 512) {
+        for (off = 0; off <= 2048 - 2; off += 512) {
             uint16_t sig = hfsp_be16(&sector[off]);
             if (sig == HFSPLUS_SIG || sig == HFSX_SIG) {
                 /* VH is at this offset; volume start is 1024 before it */
@@ -242,6 +255,8 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
     hfsplus_context_t *ctx;
     uint64_t vh_offset;
     odfs_err_t err;
+    uint8_t vh[512];
+    uint16_t sig;
 
     ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx) return ODFS_ERR_NOMEM;
@@ -254,15 +269,15 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
     ctx->vol_offset = vh_offset - HFSPLUS_VH_OFFSET;
 
     /* read Volume Header (512 bytes) */
-    uint8_t vh[512];
     {
         uint32_t lba = (uint32_t)(vh_offset / 2048);
         uint32_t off = (uint32_t)(vh_offset % 2048);
         const uint8_t *sector;
+        size_t avail;
         err = odfs_cache_read(cache, lba, &sector);
         if (err != ODFS_OK) { odfs_free(ctx); return err; }
         /* VH might span two sectors if misaligned */
-        size_t avail = 2048 - off;
+        avail = 2048 - off;
         if (avail >= 512) {
             memcpy(vh, sector + off, 512);
         } else {
@@ -273,7 +288,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         }
     }
 
-    uint16_t sig = hfsp_be16(&vh[0]);
+    sig = hfsp_be16(&vh[0]);
     if (sig != HFSPLUS_SIG && sig != HFSX_SIG) {
         odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
     }
@@ -335,16 +350,22 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
                     node = NULL;
                 }
                 if (node) {
-                    for (uint16_t r = 0; r < nrecs; r++) {
+                    uint16_t r;
+                    for (r = 0; r < nrecs; r++) {
                         uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
+                        uint32_t parent_cnid;
+                        uint16_t namelen;
+                        uint32_t keylen;
+                        uint32_t data_off;
+                        int16_t rec_type;
                         if (roff + 10 >= ctx->cat_node_size) continue;
                         /* catalog key: keylen(2) parentID(4) namelen(2) name(...) */
-                        uint32_t parent_cnid = hfsp_be32(&node[roff + 2]);
-                        uint16_t namelen = hfsp_be16(&node[roff + 6]);
-                        uint32_t keylen = hfsp_be16(&node[roff]);
-                        uint32_t data_off = roff + 2 + keylen;
+                        parent_cnid = hfsp_be32(&node[roff + 2]);
+                        namelen = hfsp_be16(&node[roff + 6]);
+                        keylen = hfsp_be16(&node[roff]);
+                        data_off = roff + 2 + keylen;
                         if (data_off + 2 >= ctx->cat_node_size) continue;
-                        int16_t rec_type = (int16_t)hfsp_be16(&node[data_off]);
+                        rec_type = (int16_t)hfsp_be16(&node[data_off]);
                         if (rec_type == HFSPLUS_FOLDER_THREAD && parent_cnid == HFSPLUS_CNID_ROOT) {
                             /* thread record: type(2) reserved(2) parentID(4) namelen(2) name(...) */
                             if (data_off + 10 <= ctx->cat_node_size) {
@@ -413,13 +434,17 @@ static odfs_err_t hfsp_walk_catalog(hfsplus_context_t *ctx,
     odfs_err_t err;
     uint32_t cur_node;
     int found_parent = 0;
+    int depth;
+    uint16_t nrecs;
+    uint32_t child;
+    uint16_t r;
 
     node = odfs_malloc(ctx->cat_node_size);
     if (!node)
         return ODFS_ERR_NOMEM;
 
     cur_node = ctx->cat_root_node;
-    for (int depth = 0; depth < 20; depth++) {
+    for (depth = 0; depth < 20; depth++) {
         err = hfsp_read_node(ctx, cache, cur_node, node);
         if (err != ODFS_OK) {
             odfs_free(node);
@@ -433,14 +458,13 @@ static odfs_err_t hfsp_walk_catalog(hfsplus_context_t *ctx,
             return ODFS_ERR_CORRUPT;
         }
 
-        uint16_t nrecs;
         if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
             odfs_free(node);
             return ODFS_ERR_CORRUPT;
         }
 
-        uint32_t child = 0;
-        for (uint16_t r = 0; r < nrecs; r++) {
+        child = 0;
+        for (r = 0; r < nrecs; r++) {
             uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
             uint32_t key_parent;
             uint32_t keylen;
@@ -479,13 +503,12 @@ static odfs_err_t hfsp_walk_catalog(hfsplus_context_t *ctx,
         if (node[8] != 0xFF)
             break;
 
-        uint16_t nrecs;
         if (!hfsp_read_record_count(node, ctx->cat_node_size, &nrecs)) {
             odfs_free(node);
             return ODFS_ERR_CORRUPT;
         }
 
-        for (uint16_t r = 0; r < nrecs; r++) {
+        for (r = 0; r < nrecs; r++) {
             uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, r);
             uint32_t next_roff =
                 hfsp_rec_offset(node, ctx->cat_node_size, r + 1);
@@ -525,6 +548,7 @@ static odfs_err_t hfsp_walk_catalog(hfsplus_context_t *ctx,
 
         cur_node = hfsp_be32(&node[0]);
         if (found_parent && cur_node != 0) {
+            uint32_t roff;
             err = hfsp_read_node(ctx, cache, cur_node, node);
             if (err != ODFS_OK) {
                 odfs_free(node);
@@ -532,7 +556,7 @@ static odfs_err_t hfsp_walk_catalog(hfsplus_context_t *ctx,
             }
             if (node[8] != 0xFF)
                 break;
-            uint32_t roff = hfsp_rec_offset(node, ctx->cat_node_size, 0);
+            roff = hfsp_rec_offset(node, ctx->cat_node_size, 0);
             if (roff + 6 < ctx->cat_node_size &&
                 hfsp_be32(&node[roff + 2]) != parent_cnid)
                 break;
@@ -689,16 +713,18 @@ static odfs_err_t hfsp_read(void *backend_ctx,
                               size_t *len)
 {
     hfsplus_context_t *ctx = backend_ctx;
+    size_t want;
+    uint64_t data_start;
     (void)log;
 
     if (offset >= file->size) { *len = 0; return ODFS_OK; }
 
-    size_t want = *len;
+    want = *len;
     if (want > file->size - offset)
         want = (size_t)(file->size - offset);
 
     /* simple case: first extent only (covers most small files) */
-    uint64_t data_start = hfsp_block_to_byte(ctx, file->extent.lba);
+    data_start = hfsp_block_to_byte(ctx, file->extent.lba);
     *len = want;
     return odfs_cache_read_bytes(cache, 0, data_start + offset, buf, len);
 }

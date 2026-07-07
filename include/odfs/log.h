@@ -91,7 +91,19 @@ static inline int odfs_log_enabled(const odfs_log_state_t *state,
     return 1;
 }
 
-/* helper macros */
+/* helper macros
+ *
+ * Two forms select on the compiler's language level. C99 and later get the
+ * original variadic macros (zero overhead: the arguments are not even
+ * evaluated when the message is filtered out). A C89 compiler — e.g. the
+ * AMIX cross gcc (2.7.2.3) — cannot parse __VA_ARGS__, so it routes to real
+ * varargs functions (odfs_log / odfs_log_<level>, defined in core/log.c),
+ * which apply the same level/subsystem filtering internally. Behavior is
+ * identical; the only difference is that the C89 form evaluates the log
+ * arguments before filtering (log call sites are side-effect free).
+ */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+
 #if ODFS_FEATURE_LOG
   #define ODFS_LOG(st, lv, sub, ...) \
       do { if (odfs_log_enabled((st), (lv), (sub))) \
@@ -108,6 +120,33 @@ static inline int odfs_log_enabled(const odfs_log_state_t *state,
 #define ODFS_INFO(st, sub, ...)  ODFS_LOG((st), ODFS_LOG_INFO,  (sub), __VA_ARGS__)
 #define ODFS_DEBUG(st, sub, ...) ODFS_LOG((st), ODFS_LOG_DEBUG, (sub), __VA_ARGS__)
 #define ODFS_TRACE(st, sub, ...) ODFS_LOG((st), ODFS_LOG_TRACE, (sub), __VA_ARGS__)
+
+#else /* C89 (pre-C99): no variadic macros — route to varargs functions */
+
+/* Per-level varargs helpers with the level baked in. Object-like macros
+ * forward the whole (st, sub, fmt, args...) argument list to them. */
+void odfs_log_fatal(odfs_log_state_t *state, odfs_log_subsys_t subsys,
+                    const char *fmt, ...);
+void odfs_log_error(odfs_log_state_t *state, odfs_log_subsys_t subsys,
+                    const char *fmt, ...);
+void odfs_log_warn(odfs_log_state_t *state, odfs_log_subsys_t subsys,
+                   const char *fmt, ...);
+void odfs_log_info(odfs_log_state_t *state, odfs_log_subsys_t subsys,
+                   const char *fmt, ...);
+void odfs_log_debug(odfs_log_state_t *state, odfs_log_subsys_t subsys,
+                    const char *fmt, ...);
+void odfs_log_trace(odfs_log_state_t *state, odfs_log_subsys_t subsys,
+                    const char *fmt, ...);
+
+#define ODFS_LOG   odfs_log
+#define ODFS_FATAL odfs_log_fatal
+#define ODFS_ERROR odfs_log_error
+#define ODFS_WARN  odfs_log_warn
+#define ODFS_INFO  odfs_log_info
+#define ODFS_DEBUG odfs_log_debug
+#define ODFS_TRACE odfs_log_trace
+
+#endif /* __STDC_VERSION__ >= 199901L */
 
 /* level / subsys name accessors */
 const char *odfs_log_level_name(odfs_log_level_t level);

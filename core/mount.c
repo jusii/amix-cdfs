@@ -333,6 +333,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     uint32_t session_candidates[100];
     size_t session_count;
     size_t session_index;
+    uint32_t session_start;
 
     if (!media || !mnt)
         return ODFS_ERR_INVAL;
@@ -377,7 +378,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
 #endif
 
     /* determine session start */
-    uint32_t session_start = 0;
+    session_start = 0;
 #if ODFS_FEATURE_MULTISESSION
     if (mnt->opts.force_session >= 0) {
         /* user forced a specific session — read TOC to find it */

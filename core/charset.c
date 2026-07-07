@@ -153,7 +153,9 @@ odfs_err_t odfs_iso_name_to_display(const char *src, size_t src_len,
 
 void odfs_sanitize_name(char *name, size_t len, char replacement)
 {
-    for (size_t i = 0; i < len && name[i] != '\0'; i++) {
+    size_t i;
+
+    for (i = 0; i < len && name[i] != '\0'; i++) {
         unsigned char c = (unsigned char)name[i];
         /* replace control characters and Amiga-problematic chars */
         if (c < 0x20 || c == '/' || c == ':' || c == 0x7F)

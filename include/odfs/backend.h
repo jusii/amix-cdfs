@@ -13,7 +13,10 @@
 #include "odfs/log.h"
 
 /* forward declarations */
+#ifndef ODFS_MOUNT_T_DEFINED
+#define ODFS_MOUNT_T_DEFINED
 typedef struct odfs_mount odfs_mount_t;
+#endif
 
 /* directory enumeration callback */
 typedef odfs_err_t (*odfs_dir_iter_fn)(const odfs_node_t *entry, void *ctx);

@@ -633,7 +633,13 @@ endif
 
 AMIX_CROSS_PREFIX ?= /home/jalanara/opt/amix-cross
 AMIX_CC     ?= $(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-gcc
-AMIX_AR     ?= $(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-ar
+# The cross binutils archiver (GNU ar 2.8.1) shipped with the toolchain
+# aborts with a glibc _FORTIFY_SOURCE "buffer overflow detected" on any
+# archive creation, so it cannot build libodfs.a. Bundling relocatable ELF
+# objects is architecture-neutral and the cross ld reads the host ar's GNU
+# armap, so the host ar is used instead. Override once the toolchain ships a
+# working ar: make amix AMIX_AR=$(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-ar
+AMIX_AR     ?= ar
 
 AMIX_BUILD  = build/amix
 
@@ -667,21 +673,23 @@ $(AMIX_BUILD)/%.o: %.c
 
 # One-shot compile+link per tool (mirrors the host tool rules). Passing
 # -lodfs suppresses the wrapper's implicit libc, so -lc is explicit and
-# ordered after -lodfs (which depends on it).
+# ordered after -lodfs (which depends on it). -lgcc supplies the 64-bit
+# soft-arithmetic helpers (__udivdi3/__umoddi3/__lshrdi3) the m68k has no
+# instructions for, which the HFS/HFS+/cache paths pull in.
 $(AMIX_BUILD)/tools/imginfo: tools/imginfo/imginfo.c $(AMIX_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  AMIXCC $<"
-	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc -lgcc
 
 $(AMIX_BUILD)/tools/imgls: tools/imgls/imgls.c $(AMIX_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  AMIXCC $<"
-	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc -lgcc
 
 $(AMIX_BUILD)/tools/imgcat: tools/imgcat/imgcat.c $(AMIX_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  AMIXCC $<"
-	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc -lgcc
 
 # ---- clean ----
 

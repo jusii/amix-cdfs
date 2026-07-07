@@ -75,14 +75,13 @@ void odfs_log_set_subsys_mask(odfs_log_state_t *state, unsigned int mask)
     state->subsys_mask = mask;
 }
 
-void odfs_log(odfs_log_state_t *state,
-               odfs_log_level_t level,
-               odfs_log_subsys_t subsys,
-               const char *fmt, ...)
+static void odfs_vlog(odfs_log_state_t *state,
+                      odfs_log_level_t level,
+                      odfs_log_subsys_t subsys,
+                      const char *fmt, va_list ap)
 {
     char buf[512];
     int hdr;
-    va_list ap;
 
     if (!odfs_log_enabled(state, level, subsys))
         return;
@@ -98,10 +97,47 @@ void odfs_log(odfs_log_state_t *state,
     if (hdr < 0)
         hdr = 0;
 
-    va_start(ap, fmt);
     if ((size_t)hdr < sizeof(buf))
         odfs_vsnprintf(buf + hdr, sizeof(buf) - hdr, fmt, ap);
-    va_end(ap);
 
     state->sink.write(level, subsys, buf, state->sink.ctx);
 }
+
+void odfs_log(odfs_log_state_t *state,
+               odfs_log_level_t level,
+               odfs_log_subsys_t subsys,
+               const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    odfs_vlog(state, level, subsys, fmt, ap);
+    va_end(ap);
+}
+
+/*
+ * C89 fallback helpers. A C89 compiler cannot use the variadic ODFS_LOG
+ * macros (see odfs/log.h), so the per-level shorthands route here instead,
+ * with the level baked in. Compiled out on C99+ where the macros are used.
+ */
+#if !(defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L)
+
+#define ODFS_DEFINE_LEVEL_LOGGER(fn, lvl)                                  \
+    void fn(odfs_log_state_t *state, odfs_log_subsys_t subsys,             \
+            const char *fmt, ...)                                          \
+    {                                                                      \
+        va_list ap;                                                        \
+        va_start(ap, fmt);                                                 \
+        odfs_vlog(state, lvl, subsys, fmt, ap);                            \
+        va_end(ap);                                                        \
+    }
+
+ODFS_DEFINE_LEVEL_LOGGER(odfs_log_fatal, ODFS_LOG_FATAL)
+ODFS_DEFINE_LEVEL_LOGGER(odfs_log_error, ODFS_LOG_ERROR)
+ODFS_DEFINE_LEVEL_LOGGER(odfs_log_warn,  ODFS_LOG_WARN)
+ODFS_DEFINE_LEVEL_LOGGER(odfs_log_info,  ODFS_LOG_INFO)
+ODFS_DEFINE_LEVEL_LOGGER(odfs_log_debug, ODFS_LOG_DEBUG)
+ODFS_DEFINE_LEVEL_LOGGER(odfs_log_trace, ODFS_LOG_TRACE)
+
+#undef ODFS_DEFINE_LEVEL_LOGGER
+
+#endif /* !C99 */

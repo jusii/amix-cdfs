@@ -55,10 +55,12 @@ int main(int argc, char **argv)
     const char *path = "/";
     int force_udf = 0, force_hfs = 0;
     imgls_opts_t ls_opts;
+    int i;
+    odfs_node_t dir;
 
     memset(&ls_opts, 0, sizeof(ls_opts));
 
-    for (int i = 1; i < argc; i++) {
+    for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "--udf") == 0)
             force_udf = 1;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--hfs") == 0)
@@ -97,7 +99,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    odfs_node_t dir;
     err = odfs_resolve_path(&mnt, path, &dir);
     if (err != ODFS_OK) {
         fprintf(stderr, "error: path '%s': %s\n", path, odfs_err_str(err));

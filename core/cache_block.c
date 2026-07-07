@@ -182,6 +182,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
 {
     uint32_t sector_size;
     uint32_t i;
+    uint32_t j;
     size_t entries_bytes;
     size_t next_bytes;
     size_t bucket_bytes;
@@ -228,7 +229,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
         cache->entries[i].data = odfs_malloc(sector_size);
         if (!cache->entries[i].data) {
             /* roll back */
-            for (uint32_t j = 0; j < i; j++)
+            for (j = 0; j < i; j++)
                 odfs_free(cache->entries[j].data);
             odfs_free(cache->buckets);
             odfs_free(cache->next);
@@ -270,10 +271,12 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
 
 void odfs_cache_destroy(odfs_cache_t *cache)
 {
+    uint32_t i;
+
     if (!cache || !cache->entries)
         return;
 
-    for (uint32_t i = 0; i < cache->capacity; i++)
+    for (i = 0; i < cache->capacity; i++)
         odfs_free(cache->entries[i].data);
     odfs_free(cache->stream_buf);
     odfs_free(cache->buckets);
@@ -285,10 +288,12 @@ void odfs_cache_destroy(odfs_cache_t *cache)
 
 void odfs_cache_flush(odfs_cache_t *cache)
 {
+    uint32_t i;
+
     if (!cache || !cache->entries)
         return;
 
-    for (uint32_t i = 0; i < cache->capacity; i++)
+    for (i = 0; i < cache->capacity; i++)
         cache->entries[i].valid = 0;
     cache->valid_count = 0;
     cache_reset_indices(cache);

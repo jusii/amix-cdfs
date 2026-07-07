@@ -123,10 +123,11 @@ static odfs_err_t joliet_probe(odfs_cache_t *cache,
     for (lba = session_start + ISO_VD_START_LBA; ; lba++) {
         const uint8_t *sector;
         odfs_err_t err = odfs_cache_read(cache, lba, &sector);
+        uint8_t vd_type;
         if (err != ODFS_OK)
             return err;
 
-        uint8_t vd_type = sector[0];
+        vd_type = sector[0];
 
         /* check CD001 signature */
         if (memcmp(&sector[1], ISO_STANDARD_ID, ISO_STANDARD_ID_LEN) != 0)
@@ -296,6 +297,11 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
         uint32_t sector_off = offset % ISO_SECTOR_SIZE;
         const uint8_t *sector;
         odfs_err_t err;
+        const uint8_t *rec;
+        size_t avail;
+        odfs_node_t node;
+        int consumed;
+        uint32_t next_offset;
 
         err = odfs_cache_read(cache, sector_lba, &sector);
         if (err != ODFS_OK) {
@@ -303,17 +309,16 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
             return err;
         }
 
-        const uint8_t *rec = sector + sector_off;
-        size_t avail = ISO_SECTOR_SIZE - sector_off;
+        rec = sector + sector_off;
+        avail = ISO_SECTOR_SIZE - sector_off;
 
         if (rec[0] == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
 
-        odfs_node_t node;
-        int consumed = joliet_parse_dir_record(rec, avail, ctx->session_start,
-                                               &ctx->next_node_id, &node);
+        consumed = joliet_parse_dir_record(rec, avail, ctx->session_start,
+                                           &ctx->next_node_id, &node);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
@@ -321,7 +326,7 @@ static odfs_err_t joliet_readdir(void *backend_ctx,
 
         node.parent_id = dir->id;
 
-        uint32_t next_offset = offset + (uint32_t)consumed;
+        next_offset = offset + (uint32_t)consumed;
 
         /* ISO Level 3: fold multi-extent continuation records into the node */
         if (node.kind == ODFS_NODE_FILE &&
@@ -379,9 +384,11 @@ static odfs_err_t joliet_read(void *backend_ctx,
                                void *buf,
                                size_t *len)
 {
+    size_t want;
+
     (void)backend_ctx;
     (void)log;
-    size_t want = *len;
+    want = *len;
 
     if (offset >= file->size) { *len = 0; return ODFS_OK; }
     if (want > file->size - offset)

@@ -19,8 +19,12 @@ int main(int argc, char **argv)
     const char *image = NULL;
     const char *path = NULL;
     int force_udf = 0, force_hfs = 0;
+    int i;
+    odfs_node_t node;
+    uint8_t buf[8192];
+    uint64_t offset = 0;
 
-    for (int i = 1; i < argc; i++) {
+    for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-u") == 0 || strcmp(argv[i], "--udf") == 0)
             force_udf = 1;
         else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--hfs") == 0)
@@ -57,7 +61,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    odfs_node_t node;
     err = odfs_resolve_path(&mnt, path, &node);
     if (err != ODFS_OK) {
         fprintf(stderr, "error: path '%s': %s\n", path, odfs_err_str(err));
@@ -66,8 +69,6 @@ int main(int argc, char **argv)
     }
 
     /* read and write to stdout */
-    uint8_t buf[8192];
-    uint64_t offset = 0;
     while (offset < node.size) {
         size_t len = sizeof(buf);
         if (offset + len > node.size)

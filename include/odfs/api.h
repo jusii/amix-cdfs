@@ -32,7 +32,11 @@ typedef struct odfs_mount_opts {
 } odfs_mount_opts_t;
 
 /* mounted volume */
-typedef struct odfs_mount {
+#ifndef ODFS_MOUNT_T_DEFINED
+#define ODFS_MOUNT_T_DEFINED
+typedef struct odfs_mount odfs_mount_t;
+#endif
+struct odfs_mount {
     odfs_media_t             media;
     odfs_cache_t             cache;
 #if ODFS_FEATURE_CACHE_META
@@ -53,7 +57,7 @@ typedef struct odfs_mount {
     /* total volume size in 2048-byte logical media blocks */
     uint32_t                  total_blocks;
     char                      volume_name[128];
-} odfs_mount_t;
+};
 
 /* initialize default mount options */
 void odfs_mount_opts_default(odfs_mount_opts_t *opts);

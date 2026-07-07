@@ -10,7 +10,10 @@
 #include "odfs/error.h"
 #include "odfs/node.h"
 
+#ifndef ODFS_MOUNT_T_DEFINED
+#define ODFS_MOUNT_T_DEFINED
 typedef struct odfs_mount odfs_mount_t;
+#endif
 
 /*
  * Resolve the parent of a node by walking the mounted directory tree.

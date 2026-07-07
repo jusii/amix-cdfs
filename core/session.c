@@ -41,6 +41,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
     odfs_err_t err;
     odfs_toc_t toc;
     int have_toc = 0;
+    uint8_t i;
 
     (void)log;
 
@@ -62,7 +63,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
              * discs. For filesystem probing we want the first data track in
              * that session, not necessarily the session's first track.
              */
-            for (uint8_t i = 0; i < toc.session_count; i++) {
+            for (i = 0; i < toc.session_count; i++) {
                 if ((toc.sessions[i].control & 0x04) == 0)
                     continue;
                 if (toc.sessions[i].start_lba < explicit_lba)
@@ -103,7 +104,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
         int found_data = 0;
         uint8_t last = 0;
 
-        for (uint8_t i = 0; i < toc.session_count; i++) {
+        for (i = 0; i < toc.session_count; i++) {
             if ((toc.sessions[i].control & 0x04) != 0) {
                 last = i;
                 found_data = 1;
@@ -131,6 +132,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
         uint32_t total = odfs_media_sector_count(media);
         uint32_t best_lba = 0;
         uint8_t buf[ISO_SECTOR_SIZE];
+        uint32_t lba;
 
         if (total == 0)
             return ODFS_OK; /* unknown size, use LBA 0 */
@@ -140,7 +142,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
          * session_start + 16. We look for CD001 at byte 1 and type
          * 0x01 at byte 0. Track the highest LBA where we find one.
          */
-        for (uint32_t lba = ISO_VD_START_OFFSET; lba + ISO_VD_START_OFFSET < total; ) {
+        for (lba = ISO_VD_START_OFFSET; lba + ISO_VD_START_OFFSET < total; ) {
             err = odfs_media_read(media, lba, 1, buf);
             if (err != ODFS_OK)
                 break;
@@ -148,11 +150,12 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
             if (buf[0] == 0x01 &&
                 memcmp(&buf[1], "CD001", 5) == 0) {
                 uint32_t session_start = lba - ISO_VD_START_OFFSET;
+                uint32_t vol_size;
                 if (session_start > best_lba || best_lba == 0)
                     best_lba = session_start;
 
                 /* read volume space size to jump past this session */
-                uint32_t vol_size = (uint32_t)buf[80] |
+                vol_size = (uint32_t)buf[80] |
                                    ((uint32_t)buf[81] << 8) |
                                    ((uint32_t)buf[82] << 16) |
                                    ((uint32_t)buf[83] << 24);
