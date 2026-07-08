@@ -296,15 +296,36 @@ static int cdfs_swapvp(struct vfs *vfsp, struct vnode **vpp, char *nm)
 /* ---- vfssw init routine --------------------------------------------- */
 
 /*
- * cdfsinit(vswp, fstype) — the vsw_init routine. Stashes the assigned fstype
- * index and publishes the op vector. The static vfssw[] row
+ * cdfsinit() — the vsw_init routine, called once at boot as the kernel walks
+ * vfssw[] initializing each filesystem type. ROBUST to the kernel's vsw_init
+ * calling convention: rather than trusting a passed (vswp, fstype) — the AMIX
+ * boot loop invokes (*vsw_init)() with no/other arguments, so a declared vswp
+ * would be garbage and writing through it corrupts an unrelated slot, leaving
+ * the real "cdfs" row's vsw_vfsops NULL (mount(2) then EINVALs before dispatch)
+ * — it SELF-LOCATES its own row in the kernel's global vfssw[] table by name,
+ * installs the op vector there, and records the row index as the fstype.
+ *
+ * Declared with empty parens (C89 "unspecified arguments") so it binds cleanly
+ * however the kernel invokes it; any arguments the kernel pushes are ignored.
+ *
+ * The vfssw[] row it locates,
  *   { "cdfs", cdfsinit, 0, 0 }
- * that resolves this is injected by the later kerntools step (out of scope).
+ * is injected by the kerntools step (out of scope). vfssw[]/nfstype come from
+ * <sys/vfs.h>; strcmp is the kernel's own copy (declared in <string.h>). All
+ * three stay undefined externs in libcdfskern.o, resolved at the kernel link.
  */
-int cdfsinit(struct vfssw *vswp, int fstype)
+int cdfsinit()
 {
-    cdfs_fstype = fstype;
-    vswp->vsw_vfsops = &cdfs_vfsops;
+    int i;
+
+    for (i = 0; i < nfstype; i++) {
+        if (vfssw[i].vsw_name != 0 &&
+            strcmp(vfssw[i].vsw_name, "cdfs") == 0) {
+            vfssw[i].vsw_vfsops = &cdfs_vfsops;
+            cdfs_fstype = i;
+            return 0;
+        }
+    }
     return 0;
 }
 
