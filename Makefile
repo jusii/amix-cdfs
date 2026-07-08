@@ -648,7 +648,18 @@ AMIX_INCLUDES = -I platform/amix/compat -I include -I backends
 AMIX_DEFS     = -DODFS_PLATFORM_AMIX
 AMIX_CFLAGS   = -O2 $(AMIX_DEFS)
 
+# The SCSI-passthrough backend (amix_scsi_media.c) needs the kernel's
+# `struct sdcom` + SDCARDS/SDUNITS definitions, which live in the cross
+# sysroot under usr/sys/amiga/alien (rico.h/sd.h) and are NOT on the
+# default include path. Scope that -I to just that one TU (see the
+# per-object override below) so the rest of the AMIX build — and the
+# portable headers — never see the kernel's aggressive short-name macros
+# (bool/uint/and/or/not from rico.h).
+AMIX_SYSROOT       ?= $(AMIX_CROSS_PREFIX)/m68k-cbm-sysv4/sysroot
+AMIX_KERN_INCLUDES  = -I $(AMIX_SYSROOT)/usr/sys/amiga/alien
+
 AMIX_LIB_SRCS = $(CORE_SRCS) platform/amix/amix_file_media.c \
+                platform/amix/amix_scsi_media.c \
                 platform/amiga/printf_local.c
 AMIX_LIB_OBJS = $(patsubst %.c,$(AMIX_BUILD)/%.o,$(AMIX_LIB_SRCS))
 
@@ -671,6 +682,10 @@ $(AMIX_BUILD)/%.o: %.c
 	@mkdir -p $(@D)
 	@echo "  AMIXCC $<"
 	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -c -o $@ $<
+
+# Only the SCSI backend pulls in the kernel headers (rico.h/sd.h); scope
+# their include path to that TU so rico.h's short-name macros stay local.
+$(AMIX_BUILD)/platform/amix/amix_scsi_media.o: AMIX_INCLUDES += $(AMIX_KERN_INCLUDES)
 
 # One-shot compile+link per tool (mirrors the host tool rules). Passing
 # -lodfs suppresses the wrapper's implicit libc, so -lc is explicit and

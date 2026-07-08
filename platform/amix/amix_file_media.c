@@ -14,7 +14,9 @@
  *     treats them as ODFS_ERR_UNSUPPORTED.
  *
  * SCSI passthrough for a real drive (/dev/scsi GSIO) is a separate
- * backend (T1.P1b) and is intentionally not handled here.
+ * backend (amix_scsi_media.c): this file owns the AMIX media-open seam
+ * and routes a "scsi:" device spec there, but the CDB/ioctl logic lives
+ * entirely in that file.
  *
  * Written in C89 for the period AMIX cross compiler (GCC 2.7.2.3):
  * declarations at block scope, no C99 for-init or mixed declarations.
@@ -23,11 +25,13 @@
  */
 
 #include "odfs/media.h"
+#include "amix_scsi_media.h"
 
 #include <sys/types.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <string.h>
 
 #define AMIX_SECTOR_SIZE 2048
 
@@ -120,6 +124,15 @@ odfs_err_t odfs_media_open_image(const char *path, odfs_media_t *out)
 
     if (path == 0 || out == 0)
         return ODFS_ERR_INVAL;
+
+    /*
+     * Device-spec routing: a "scsi:<card>:<unit>[:<devpath>]" spec names a
+     * real optical drive reached through the SVR4 SCSI passthrough, not a
+     * seekable file. Hand it to the GSIO backend; every other spec is a raw
+     * slice or .iso path served by the file backend below.
+     */
+    if (strncmp(path, "scsi:", 5) == 0)
+        return odfs_media_open_scsi(path, out);
 
     fd = open(path, O_RDONLY);
     if (fd < 0)
