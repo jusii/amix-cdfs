@@ -732,15 +732,27 @@ $(AMIX_BUILD)/tools/imgcat: tools/imgcat/imgcat.c $(AMIX_BUILD)/libodfs.a
 AMIX_LD          ?= $(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-ld
 AMIX_KERNEL_BUILD = build/amix-kernel
 
-# compat/ must precede the (stdint-less) sysroot, exactly as the userspace
-# amix target does, so the portable code's <stdint.h>/<inttypes.h> resolve
-# to the shims that forward to include/odfs/compat_stdint.h.
-AMIX_KERNEL_INCLUDES = -I platform/amix/compat -I include -I backends
+# Two compat/ dirs precede the (stdint-less, memcpy-less) sysroot on the search
+# path: platform/amix-kernel/compat supplies the <string.h> interceptor that
+# routes memcpy/memset/memcmp/strlen to the cdfs-provided kstring.c bodies (the
+# SVR4 kernel exports only bcopy/bzero), and platform/amix/compat supplies the
+# <stdint.h>/<inttypes.h> shims forwarding to include/odfs/compat_stdint.h. The
+# amix-kernel one must come FIRST so its string.h wins over the sysroot's.
+AMIX_KERNEL_INCLUDES = -I platform/amix-kernel/compat -I platform/amix/compat \
+                       -I include -I backends
 AMIX_KERNEL_DEFS     = -DODFS_PLATFORM_AMIX_KERNEL -D_KERNEL
 AMIX_KERNEL_CFLAGS   = -O2 $(AMIX_KERNEL_DEFS)
 
+# The portable core/backends plus the in-kernel SCSI media backend and the
+# vfsops/vnodeops/node-cache glue (cdfs_*.c) that makes the core mountable, plus
+# kstring.c (the freestanding memcpy/memset/memcmp/strlen the SVR4 kernel lacks)
+# and the bounded formatter.
 AMIX_KERNEL_LIB_SRCS = $(CORE_SRCS) \
                        platform/amix-kernel/amix_kern_media.c \
+                       platform/amix-kernel/cdfs_vfsops.c \
+                       platform/amix-kernel/cdfs_vnodeops.c \
+                       platform/amix-kernel/cdfs_node.c \
+                       platform/amix-kernel/kstring.c \
                        platform/amiga/printf_local.c
 AMIX_KERNEL_LIB_OBJS = $(patsubst %.c,$(AMIX_KERNEL_BUILD)/%.o,$(AMIX_KERNEL_LIB_SRCS))
 
@@ -764,6 +776,14 @@ $(AMIX_KERNEL_BUILD)/%.o: %.c
 # same pattern the userspace amix target uses for amix_scsi_media.o.
 $(AMIX_KERNEL_BUILD)/platform/amix-kernel/amix_kern_media.o: \
 	AMIX_KERNEL_INCLUDES += $(AMIX_KERN_INCLUDES)
+
+# kstring.c defines the freestanding memcpy/memmove/memset/memcmp/strlen. It
+# MUST compile with -fno-builtin: otherwise GCC recognizes the byte loops as the
+# very idioms it is defining and rewrites them into self-calls (infinite
+# recursion) — the same freestanding trap platform/amiga/os4/freestanding.o
+# guards against.
+$(AMIX_KERNEL_BUILD)/platform/amix-kernel/kstring.o: \
+	AMIX_KERNEL_CFLAGS += -fno-builtin
 
 # ---- clean ----
 
