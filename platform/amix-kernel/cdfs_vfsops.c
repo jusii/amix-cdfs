@@ -104,15 +104,15 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     int              e;
 
     if (uap == 0 || uap->spec == 0)
-        return EINVAL;
+        return 210;   /* TEMP DIAGNOSTIC -- remove: was EINVAL */
 
     e = copyinstr(uap->spec, specbuf, sizeof(specbuf), &done);
     if (e != 0)
-        return e;
+        return 220;   /* TEMP DIAGNOSTIC -- remove: was e */
     specbuf[sizeof(specbuf) - 1] = '\0';
 
     if (cdfs_parse_spec(specbuf, &card, &unit) != 0)
-        return EINVAL;
+        return 211;   /* TEMP DIAGNOSTIC -- remove: was EINVAL */
 
     /* TEMP DIAGNOSTIC -- remove */
     cdfs_diag.card    = (int)card;
