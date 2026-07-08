@@ -38,6 +38,9 @@
 #include "odfs/media.h"
 #include "odfs/alloc.h"
 #include "amix_kern_media.h"
+#include "cdfs.h"         /* TEMP DIAGNOSTIC -- remove: cdfs_diag global. Before
+                          * rico.h so its short-name macros can't touch the
+                          * vfs/vnode/api headers cdfs.h drags in. */
 
 /*
  * SVR4 kernel services. Included before the alien short-name macros so the
@@ -51,9 +54,6 @@
 #include <sys/types.h>   /* caddr_t, paddr_t, uint (typedef) */
 #include <sys/param.h>   /* PRIBIO                           */
 #include <sys/inline.h>  /* _spl0/_spl2 inlines + spl0/spl2 macros   */
-#include <sys/cmn_err.h> /* TEMP DIAGNOSTIC -- remove: cmn_err/CE_CONT
-                          * (before rico.h so its short-name macros can't
-                          * touch this header) */
 
 /* Kernel SCSI transport ABI — LAST: rico.h's bool/uint/uchar macros. */
 #include "rico.h"        /* uchar/uint/bool, TRUE/FALSE               */
@@ -194,18 +194,20 @@ static odfs_err_t amix_kern_read_sectors(void *ctx, uint32_t lba,
         err = amix_kern_submit(c, cdb, 10, 1, out,
                                (unsigned int)(chunk * AMIX_KERN_CD_SECTOR_SIZE));
 
-        /* TEMP DIAGNOSTIC -- remove: dump the very first data read once. At
-         * ISO LBA 16 the sector starts with a volume-descriptor type byte
-         * followed by "CD001" (0x43 0x44 0x30 0x30 0x31). */
+        /* TEMP DIAGNOSTIC -- remove: record the very first data read once into
+         * the global diag struct. `out` still points at the buffer start here
+         * (the loop advances it below). At ISO LBA 16 the sector starts with a
+         * volume-descriptor type byte followed by "CD001" (43 44 30 30 31). */
         {
             static int amix_kern_read1_done = 0;
             if (!amix_kern_read1_done) {
+                int j;
                 amix_kern_read1_done = 1;
-                cmn_err(CE_CONT,
-                    "cdfs: read1 lba=%d count=%d err=%d b= %x %x %x %x %x %x %x %x\n",
-                    (int)lba, (int)count, (int)err,
-                    out[0], out[1], out[2], out[3],
-                    out[4], out[5], out[6], out[7]);
+                cdfs_diag.r1_lba   = (int)lba;
+                cdfs_diag.r1_count = (int)count;
+                cdfs_diag.r1_err   = (int)err;
+                for (j = 0; j < 16; j++)
+                    cdfs_diag.r1_bytes[j] = out[j];
             }
         }
         /* TEMP DIAGNOSTIC -- remove */

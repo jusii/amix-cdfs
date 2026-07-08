@@ -129,6 +129,37 @@ void cdfs_time_to_timestruc(const odfs_timestamp_t *ts, timestruc_t *out);
 /* Map an ODFS error to an errno for the VFS/VOP return path. */
 int  cdfs_errno(odfs_err_t err);
 
+/* ---- TEMP diagnostic (throwaway) ------------------------------------ */
+
+/* TEMP DIAGNOSTIC -- remove */
+/*
+ * Global diagnostic struct for the cdfs_mount EINVAL bench bug, read straight
+ * out of the running kernel via /dev/kmem (adb resolves cdfs_diag's runtime
+ * address). No console/cmn_err dependency: cdfs_mount and the media backend
+ * populate it in place as each mount stage happens; the reader dumps the bytes.
+ *
+ * Layout is fixed and portable to a big-endian /dev/kmem parse: on m68k every
+ * `int` is 4 bytes big-endian with natural (4-byte) alignment, so the struct is
+ * ten contiguous 4-byte ints followed by a raw 16-byte array (no padding).
+ * Zero-initialized in BSS; `magic` is written LAST so a non-zero magic proves
+ * the struct is fully populated.
+ */
+struct cdfs_diag_s {
+    int           magic;        /* set LAST to 0x0DF50001 when fully populated */
+    int           reached;      /* 1=after parse, 2=after media-open OK, 3=after odfs_mount */
+    int           card;
+    int           unit;
+    int           mopen_oe;     /* odfs_kern_media_open_scsi return (odfs_err_t as int) */
+    int           scount;       /* odfs_media_sector_count after a successful open */
+    int           mount_oe;     /* odfs_mount return (odfs_err_t as int) */
+    int           r1_lba;       /* first amix_kern_read_sectors call: lba */
+    int           r1_count;     /* ... count */
+    int           r1_err;       /* ... the submit err (odfs_err_t as int) */
+    unsigned char r1_bytes[16]; /* first 16 bytes of the buffer after the first read */
+};
+extern struct cdfs_diag_s cdfs_diag;
+/* TEMP DIAGNOSTIC -- remove */
+
 #endif /* ODFS_PLATFORM_AMIX_KERNEL */
 
 #endif /* ODFS_AMIX_KERNEL_CDFS_H */
