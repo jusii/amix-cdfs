@@ -24,8 +24,9 @@
  * aggressive short-name macros (bool/uint/uchar/and/or/not/...).
  *
  * PROVIDER-FOUNDATION SCOPE: this file must COMPILE and LINK as part of the
- * relocatable kernel object. sdqueue()/vtop()/sleep()/wakeup()/spl* stay
- * undefined externs resolved at the final kernel link; the transport is not
+ * relocatable kernel object. sdqueue()/vtop()/sleep()/wakeup() stay undefined
+ * externs resolved at the final kernel link; spl0/spl2 (sdspl) inline from
+ * <sys/inline.h>, so they emit no external symbol at all. The transport is not
  * exercised until the on-box bench.
  *
  * Written in C89 for the period AMIX cross compiler (GCC 2.7.2.3):
@@ -49,6 +50,7 @@
  */
 #include <sys/types.h>   /* caddr_t, paddr_t, uint (typedef) */
 #include <sys/param.h>   /* PRIBIO                           */
+#include <sys/inline.h>  /* _spl0/_spl2 inlines + spl0/spl2 macros   */
 
 /* Kernel SCSI transport ABI — LAST: rico.h's bool/uint/uchar macros. */
 #include "rico.h"        /* uchar/uint/bool, TRUE/FALSE               */
@@ -69,11 +71,12 @@
  * Kernel externs the headers above do not declare. Spelled K&R (no
  * prototype), matching the period kernel's own declarations, so the ABI is
  * whatever the kernel provides. Left undefined in the relocatable object.
+ * spl0/spl2 (and thus sdspl) are NOT here: <sys/inline.h> supplies them as
+ * static inline _spl0/_spl2, so the calls below inline rather than emit an
+ * external symbol the whole-kernel link would have to resolve.
  */
 struct proc;
 extern void    sdqueue(/* struct sdcom * */);  /* scsi.c: enqueue a request  */
-extern int     spl0(/* void */);               /* lower ipl to 0 (gsioctl)   */
-extern int     spl2(/* void */);               /* sdspl in sd.h -> spl2      */
 extern paddr_t vtop(/* caddr_t, struct proc * */); /* VA -> bus address      */
 extern int     sleep(/* caddr_t, int */);      /* block on a channel         */
 extern void    wakeup(/* caddr_t */);          /* wake sleepers on a channel */

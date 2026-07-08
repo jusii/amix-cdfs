@@ -2,10 +2,12 @@
  * platform/amix-kernel/compat/string.h — AMIX in-kernel <string.h> interceptor.
  *
  * The portable core/backends `#include <string.h>` and use memcpy/memmove/
- * memset/memcmp/strlen. The SVR4 kernel runtime (see <sys/systm.h>) exports
- * only bcopy/bzero/bcmp/strcmp/strncmp/strncpy/strncat — it has NO memcpy/
- * memset/memcmp/strlen. So the kernel-compiled tree has nothing to resolve
- * those four against.
+ * memset/memcmp/strlen. The SVR4 kernel resolves these from TWO places, not
+ * one: its ml/exp module exports GLOBAL memcpy and strlen (plus bcopy/bzero/
+ * bcmp/strcmp/strncmp/strncpy/strncat), but NOTHING in the kernel provides
+ * memmove or memset, and its only memcmp is a static/local symbol in netinet.
+ * So memcpy/strlen resolve to the kernel at the final link, while cdfs itself
+ * must supply memmove/memset/memcmp.
  *
  * This directory is placed on the include search path AHEAD of the sysroot for
  * the AMIX in-kernel build only (same trick as platform/amix/compat/stdint.h),
@@ -20,10 +22,11 @@
  * copies/zero-inits (e.g. `*out = mnt->virtual_root_map[i];` where the operand
  * is a ~540-byte odfs_node_t, and cdfs_getnode's `cnp->node = *n;`) to DIRECT
  * memcpy/memset calls at codegen time, which no macro can rewrite. Those force
- * the real symbols to exist. Since the SVR4 kernel defines none of them, cdfs
- * supplies the real memcpy/memmove/memset/memcmp/strlen with no link clash.
- * strcmp/strncmp/strncpy are left undeclared-here-as-cdfs and resolve to the
- * kernel's own copies.
+ * the real symbols to exist. cdfs defines the three the kernel lacks
+ * (memmove/memset/memcmp); memcpy/strlen — like strcmp/strncmp/strncpy — are
+ * declared here but NOT defined, resolving to the kernel's own copies at the
+ * final link. Defining memcpy/strlen in cdfs too would collide with ml/exp's
+ * globals ("multiple definition") when the whole kernel is linked.
  *
  * Inert everywhere else: without ODFS_PLATFORM_AMIX_KERNEL it falls through to
  * the next <string.h> on the path. This header is only ever on the search path
@@ -48,16 +51,19 @@ typedef unsigned int size_t;
 #define NULL 0
 #endif
 
-/* cdfs-provided (bodies in kstring.c); prototypes match the GCC builtins. */
-extern void  *memcpy(void *, const void *, size_t);
+/* cdfs-provided (bodies in kstring.c): the three the SVR4 kernel does not
+ * export. Prototypes match the GCC builtins. */
 extern void  *memmove(void *, const void *, size_t);
 extern void  *memset(void *, int, size_t);
 extern int    memcmp(const void *, const void *, size_t);
-extern size_t strlen(const char *);
 
-/* Kernel-provided; declared here so the portable code that uses them compiles
+/* Kernel-provided; declared here (standard signatures, matching the kernel's
+ * so the symbols bind cleanly) so the portable code that uses them compiles
  * without pulling the full sysroot <string.h>. They stay undefined externs in
- * libcdfskern.o, resolved at the final kernel link. */
+ * libcdfskern.o, resolved at the final kernel link — memcpy/strlen to ml/exp,
+ * the str* to the kernel's own copies. */
+extern void  *memcpy(void *, const void *, size_t);
+extern size_t strlen(const char *);
 extern int    strcmp(const char *, const char *);
 extern int    strncmp(const char *, const char *, size_t);
 extern char  *strncpy(char *, const char *, size_t);

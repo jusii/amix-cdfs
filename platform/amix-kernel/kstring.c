@@ -1,17 +1,23 @@
 /*
- * kstring.c — freestanding string/mem primitives for the AMIX in-kernel cdfs.
+ * kstring.c — the mem primitives the AMIX kernel does NOT already export.
  *
- * The SVR4 kernel exports bcopy/bzero but NOT memcpy/memset/memcmp/strlen (see
- * <sys/systm.h>), yet the portable core/backends — and GCC's own lowering of
- * aggregate struct copies/zero-inits — reference exactly those four (plus
- * memmove). This file supplies the real symbols, layered on the kernel's
- * bcopy/bzero where possible. No clash at the final kernel link: the kernel
- * defines none of these names.
+ * The portable core/backends — and GCC's own lowering of aggregate struct
+ * copies/zero-inits — reference memcpy/memmove/memset/memcmp/strlen. But of
+ * those the kernel's ml/exp module ALREADY exports GLOBAL memcpy and strlen,
+ * so cdfs must NOT define them: a second definition makes the whole-kernel
+ * `ld -o unix -r` fail with "multiple definition of 'memcpy'"/"'strlen'".
+ * memcpy and strlen are therefore left as undefined externs (declared in
+ * compat/string.h) and resolve to the kernel's ml/exp copies at the final
+ * link — the standard ABI every other kernel module relies on.
+ *
+ * The kernel exports NEITHER memmove NOR memset, and its only memcmp lives in
+ * netinet as a static/local symbol (no clash), so cdfs supplies exactly those
+ * three here, layered on the kernel's bcopy/bzero where possible.
  *
  * MUST be compiled with -fno-builtin (see the Makefile per-object override):
- * otherwise GCC recognizes the byte loops below as the very memset/memcmp/
- * strlen idioms and rewrites them into self-calls (infinite recursion) — the
- * same freestanding trap the OS4 handler's freestanding.o guards against.
+ * otherwise GCC recognizes the byte loops below as the very memset/memcmp
+ * idioms and rewrites them into self-calls (infinite recursion) — the same
+ * freestanding trap the OS4 handler's freestanding.o guards against.
  *
  * The kernel routines are spelled K&R (no prototype), matching the period
  * kernel's own <sys/systm.h> declarations, and <sys/systm.h> is deliberately
@@ -29,15 +35,6 @@
 /* Kernel primitives, declared K&R (whatever the kernel provides). */
 extern void bcopy(/* caddr_t src, caddr_t dst, size_t n */);
 extern void bzero(/* caddr_t s, size_t n */);
-
-void *memcpy(dst, src, n)
-    void *dst;
-    const void *src;
-    size_t n;
-{
-    bcopy((caddr_t)src, (caddr_t)dst, n);   /* NB: bcopy is (src, dst, n) */
-    return dst;
-}
 
 void *memmove(dst, src, n)
     void *dst;
@@ -81,16 +78,6 @@ int memcmp(a, b, n)
             return (int)pa[i] - (int)pb[i];
     }
     return 0;
-}
-
-size_t strlen(s)
-    const char *s;
-{
-    const char *p = s;
-
-    while (*p != '\0')
-        p++;
-    return (size_t)(p - s);
 }
 
 #endif /* ODFS_PLATFORM_AMIX_KERNEL */
