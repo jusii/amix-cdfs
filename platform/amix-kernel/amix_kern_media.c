@@ -51,6 +51,9 @@
 #include <sys/types.h>   /* caddr_t, paddr_t, uint (typedef) */
 #include <sys/param.h>   /* PRIBIO                           */
 #include <sys/inline.h>  /* _spl0/_spl2 inlines + spl0/spl2 macros   */
+#include <sys/cmn_err.h> /* TEMP DIAGNOSTIC -- remove: cmn_err/CE_CONT
+                          * (before rico.h so its short-name macros can't
+                          * touch this header) */
 
 /* Kernel SCSI transport ABI — LAST: rico.h's bool/uint/uchar macros. */
 #include "rico.h"        /* uchar/uint/bool, TRUE/FALSE               */
@@ -190,6 +193,23 @@ static odfs_err_t amix_kern_read_sectors(void *ctx, uint32_t lba,
         /* Data length is blocks * 2048 (CD), NOT * 512. */
         err = amix_kern_submit(c, cdb, 10, 1, out,
                                (unsigned int)(chunk * AMIX_KERN_CD_SECTOR_SIZE));
+
+        /* TEMP DIAGNOSTIC -- remove: dump the very first data read once. At
+         * ISO LBA 16 the sector starts with a volume-descriptor type byte
+         * followed by "CD001" (0x43 0x44 0x30 0x30 0x31). */
+        {
+            static int amix_kern_read1_done = 0;
+            if (!amix_kern_read1_done) {
+                amix_kern_read1_done = 1;
+                cmn_err(CE_CONT,
+                    "cdfs: read1 lba=%d count=%d err=%d b= %x %x %x %x %x %x %x %x\n",
+                    (int)lba, (int)count, (int)err,
+                    out[0], out[1], out[2], out[3],
+                    out[4], out[5], out[6], out[7]);
+            }
+        }
+        /* TEMP DIAGNOSTIC -- remove */
+
         if (err != ODFS_OK)
             return err;
 

@@ -30,6 +30,7 @@
 #include <sys/cred.h>
 #include <sys/kmem.h>          /* kmem_zalloc/kmem_free, KM_SLEEP */
 #include <string.h>            /* memset, strncpy */
+#include <sys/cmn_err.h>       /* TEMP DIAGNOSTIC -- remove: cmn_err/CE_CONT */
 
 /*
  * copyinstr() copies a NUL-terminated string in from user space. Declared K&R
@@ -81,6 +82,22 @@ static int cdfs_parse_spec(const char *s, unsigned int *card, unsigned int *unit
     return 0;
 }
 
+/* TEMP DIAGNOSTIC -- remove */
+/*
+ * odfs log sink: the core hands us a fully-formatted line; dump it to the
+ * kernel console. Signature MUST match odfs_log_sink_fn in include/odfs/log.h.
+ */
+static void cdfs_diag_log_sink(odfs_log_level_t level,
+                               odfs_log_subsys_t subsys,
+                               const char *msg, void *ctx)
+{
+    (void)level;
+    (void)subsys;
+    (void)ctx;
+    cmn_err(CE_CONT, "cdfs/odfs: %s\n", (char *)msg);
+}
+/* TEMP DIAGNOSTIC -- remove */
+
 /* ---- vfs ops (positional, matching <sys/vfs.h> struct vfsops) -------- */
 
 /* 1: vfs_mount(vfsp, mvp, uap, cr) */
@@ -96,6 +113,7 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     odfs_media_t     media;
     odfs_err_t       oe;
     int              e;
+    odfs_log_state_t diaglog;   /* TEMP DIAGNOSTIC -- remove */
 
     if (uap == 0 || uap->spec == 0)
         return EINVAL;
@@ -108,6 +126,10 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     if (cdfs_parse_spec(specbuf, &card, &unit) != 0)
         return EINVAL;
 
+    /* TEMP DIAGNOSTIC -- remove */
+    cmn_err(CE_CONT, "cdfs: mount card=%d unit=%d\n", (int)card, (int)unit);
+    /* TEMP DIAGNOSTIC -- remove */
+
     cvfs = (struct cdfs_vfs *)kmem_zalloc(sizeof(*cvfs), KM_SLEEP);
     if (cvfs == 0)
         return ENOMEM;
@@ -116,12 +138,31 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
 
     oe = odfs_kern_media_open_scsi(card, unit, &media);
     if (oe != ODFS_OK) {
+        /* TEMP DIAGNOSTIC -- remove */
+        cmn_err(CE_CONT, "cdfs: media-open FAILED oe=%d\n", (int)oe);
+        /* TEMP DIAGNOSTIC -- remove */
         kmem_free((void *)cvfs, sizeof(*cvfs));
         return cdfs_errno(oe);
     }
 
+    /* TEMP DIAGNOSTIC -- remove */
+    cmn_err(CE_CONT, "cdfs: media-open OK sector_count=%d\n",
+            (int)odfs_media_sector_count(&media));
+    /* TEMP DIAGNOSTIC -- remove */
+
+    /* TEMP DIAGNOSTIC -- remove: wire a verbose console log sink so the core's
+     * internal mount logging prints via cmn_err. */
+    odfs_log_init(&diaglog);
+    odfs_log_set_level(&diaglog, ODFS_LOG_TRACE);      /* most verbose */
+    odfs_log_set_subsys_mask(&diaglog, ~0u);           /* all subsystems */
+    odfs_log_set_sink(&diaglog, cdfs_diag_log_sink, (void *)0);
+    /* TEMP DIAGNOSTIC -- remove */
+
     oe = odfs_mount(&media, (const odfs_mount_opts_t *)0,
-                    (odfs_log_state_t *)0, &cvfs->mnt);
+                    &diaglog, &cvfs->mnt);
+    /* TEMP DIAGNOSTIC -- remove */
+    cmn_err(CE_CONT, "cdfs: odfs_mount oe=%d\n", (int)oe);
+    /* TEMP DIAGNOSTIC -- remove */
     if (oe != ODFS_OK) {
         odfs_media_close(&media);   /* odfs_mount does not close on failure */
         kmem_free((void *)cvfs, sizeof(*cvfs));
