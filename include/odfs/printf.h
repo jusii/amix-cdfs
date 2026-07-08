@@ -9,9 +9,11 @@
 
 #include <stdarg.h>
 #include <stddef.h>
-#include <stdio.h>
+#if !defined(ODFS_PLATFORM_AMIX_KERNEL)
+#include <stdio.h>   /* only the host #else branch below needs it */
+#endif
 
-#if defined(AMIGA) || defined(ODFS_PLATFORM_AMIX)
+#if defined(AMIGA) || defined(ODFS_PLATFORM_AMIX) || defined(ODFS_PLATFORM_AMIX_KERNEL)
 
 int odfs_vsnprintf(char *buf, size_t size, const char *fmt, va_list ap)
 #ifdef __GNUC__

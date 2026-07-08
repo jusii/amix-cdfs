@@ -167,6 +167,20 @@
   #endif
 #endif
 
+#if defined(ODFS_PLATFORM_AMIX_KERNEL)
+  /*
+   * AMIX in-kernel context: no libc, no userspace syscalls, no <stdio.h>.
+   * Like the userspace AMIX arm above, the sysroot ships no <stdint.h>, so
+   * pull the fixed-width types in here; and like it, AMIX is its own
+   * platform, never the host template — force ODFS_PLATFORM_HOST 0 so the
+   * host default below cannot claim this build.
+   */
+  #include "odfs/compat_stdint.h"
+  #ifndef ODFS_PLATFORM_HOST
+    #define ODFS_PLATFORM_HOST 0
+  #endif
+#endif
+
 /* host builds for testing */
 #ifndef ODFS_PLATFORM_HOST
   #if !ODFS_PLATFORM_AMIGA

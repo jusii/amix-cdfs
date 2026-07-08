@@ -6,7 +6,9 @@
 
 #include "odfs/log.h"
 #include "odfs/printf.h"
-#include <stdio.h>
+#if !defined(ODFS_PLATFORM_AMIX_KERNEL)
+#include <stdio.h>   /* not present / not used in the AMIX kernel build */
+#endif
 #include <string.h>
 
 static const char *level_names[] = {

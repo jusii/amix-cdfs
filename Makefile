@@ -707,6 +707,64 @@ $(AMIX_BUILD)/tools/imgcat: tools/imgcat/imgcat.c $(AMIX_BUILD)/libodfs.a
 	@echo "  AMIXCC $<"
 	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc -lgcc
 
+# ==================================================================
+# AMIX (SVR4/m68k) in-kernel build — provider foundation
+# ==================================================================
+#
+# Proves the portable ODFS core + backends compile and link as an SVR4
+# kernel object, paired with the in-kernel SCSI media backend
+# (platform/amix-kernel/amix_kern_media.c). It reuses the userspace amix
+# target's cross CC and baked-sysroot wrapper, but differs in three ways:
+#
+#   1. -DODFS_PLATFORM_AMIX_KERNEL selects the kernel arm at each of the
+#      four portable seams (alloc via kmem, no <stdio.h>, the bounded
+#      formatter, the fixed-width-type shim) — no libc, no syscalls.
+#   2. -D_KERNEL turns on the sys/*.h kernel declarations (systm.h gates
+#      sleep/wakeup/bcopy on it; the alien sd.h ABI needs it too).
+#   3. The objects are combined with the cross `ld -r` into ONE relocatable
+#      object, NOT linked as an executable. The gcc wrapper always injects
+#      crt1/crti/crtn + libc, so it is bypassed for the final link; ld -r
+#      leaves every kernel/toolchain extern (kmem_*, sdqueue, sleep/wakeup,
+#      spl*, vtop, __udivdi3/__umoddi3/__lshrdi3, memcpy/memset/...)
+#      undefined, to be resolved at the real kernel link. No -lgcc: the
+#      three 64-bit soft-arithmetic helpers are LEFT undefined on purpose.
+
+AMIX_LD          ?= $(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-ld
+AMIX_KERNEL_BUILD = build/amix-kernel
+
+# compat/ must precede the (stdint-less) sysroot, exactly as the userspace
+# amix target does, so the portable code's <stdint.h>/<inttypes.h> resolve
+# to the shims that forward to include/odfs/compat_stdint.h.
+AMIX_KERNEL_INCLUDES = -I platform/amix/compat -I include -I backends
+AMIX_KERNEL_DEFS     = -DODFS_PLATFORM_AMIX_KERNEL -D_KERNEL
+AMIX_KERNEL_CFLAGS   = -O2 $(AMIX_KERNEL_DEFS)
+
+AMIX_KERNEL_LIB_SRCS = $(CORE_SRCS) \
+                       platform/amix-kernel/amix_kern_media.c \
+                       platform/amiga/printf_local.c
+AMIX_KERNEL_LIB_OBJS = $(patsubst %.c,$(AMIX_KERNEL_BUILD)/%.o,$(AMIX_KERNEL_LIB_SRCS))
+
+AMIX_KERNEL_OBJ = $(AMIX_KERNEL_BUILD)/libcdfskern.o
+
+amix-kernel: $(AMIX_KERNEL_OBJ)
+	@echo "  AMIX-KERNEL build complete: $(AMIX_KERNEL_OBJ)"
+
+$(AMIX_KERNEL_OBJ): $(AMIX_KERNEL_LIB_OBJS)
+	@mkdir -p $(@D)
+	@echo "  LD -r  $@"
+	@$(AMIX_LD) -r -o $@ $(AMIX_KERNEL_LIB_OBJS)
+
+$(AMIX_KERNEL_BUILD)/%.o: %.c
+	@mkdir -p $(@D)
+	@echo "  KAMIXCC $<"
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_KERNEL_INCLUDES) $(AMIX_KERNEL_CFLAGS) -c -o $@ $<
+
+# Only the kernel media backend pulls the alien SCSI headers (rico.h/sd.h);
+# scope their -I to that one TU so rico.h's short-name macros stay local —
+# same pattern the userspace amix target uses for amix_scsi_media.o.
+$(AMIX_KERNEL_BUILD)/platform/amix-kernel/amix_kern_media.o: \
+	AMIX_KERNEL_INCLUDES += $(AMIX_KERN_INCLUDES)
+
 # ---- clean ----
 
 clean:

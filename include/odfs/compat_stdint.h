@@ -11,8 +11,10 @@
  * the shared code keep working without being edited.
  *
  * Inert on every other platform: the whole body is compiled only when
- * ODFS_PLATFORM_AMIX is defined (set via -DODFS_PLATFORM_AMIX). Host and
- * AmigaOS builds never see any of it.
+ * ODFS_PLATFORM_AMIX or ODFS_PLATFORM_AMIX_KERNEL is defined (set via
+ * -DODFS_PLATFORM_AMIX / -DODFS_PLATFORM_AMIX_KERNEL). The in-kernel AMIX
+ * build needs the same fixed-width types for the same reason — the sysroot
+ * still ships no <stdint.h>. Host and AmigaOS builds never see any of it.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
@@ -20,7 +22,7 @@
 #ifndef ODFS_COMPAT_STDINT_H
 #define ODFS_COMPAT_STDINT_H
 
-#if defined(ODFS_PLATFORM_AMIX)
+#if defined(ODFS_PLATFORM_AMIX) || defined(ODFS_PLATFORM_AMIX_KERNEL)
 
 /*
  * Prefer the compiler's own width builtins when it advertises them
@@ -129,6 +131,6 @@ typedef unsigned long uintptr_t;
 #define UINT64_MAX 18446744073709551615ULL
 #endif
 
-#endif /* ODFS_PLATFORM_AMIX */
+#endif /* ODFS_PLATFORM_AMIX || ODFS_PLATFORM_AMIX_KERNEL */
 
 #endif /* ODFS_COMPAT_STDINT_H */
