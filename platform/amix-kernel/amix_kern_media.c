@@ -64,11 +64,21 @@
 
 /*
  * Per-request transfer cap, in BYTES. read_sectors chunks the requested
- * range so no single sdcom exceeds this. 32768 = 16 CD sectors, a clean
- * multiple of the sector size. Unlike the userspace GSIO path there is no
- * fixed bounce buffer to fit under — the kernel DMAs straight to `buf`.
+ * range so no single sdcom exceeds this.
+ *
+ * ONE SECTOR (2048). Bench evidence: single-sector reads are correct (the PVD,
+ * every mount read, and a direct diag read all return good data), but a
+ * multi-sector request — the block cache's read-ahead issues an 8-sector
+ * (16 KB) DMA into one buffer, and file reads stream multiple sectors — comes
+ * back as GARBAGE (the returned buffer held kernel text) and then wedges the
+ * box. That is the signature of the SCSI HBA's DMA not spanning a transfer
+ * larger than a single 2048-byte block here (a bounce/contiguity limit; this
+ * board is the one that needed the a4091 super-DMAC bounce). Capping to one
+ * sector keeps every DMA on the proven-good single-block path; the portable
+ * core may still request many sectors — read_sectors just splits them into
+ * one-block sdcoms. Raise this only once the HBA DMA limit is known good.
  */
-#define AMIX_KERN_MAX_XFER 32768u
+#define AMIX_KERN_MAX_XFER AMIX_KERN_CD_SECTOR_SIZE
 
 /*
  * Kernel externs the headers above do not declare. Spelled K&R (no

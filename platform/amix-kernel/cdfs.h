@@ -194,6 +194,10 @@ struct cdfs_diag_s {
      */
     int           d1c_err;      /* odfs_cache_read of d1_lba: err (-2 = skipped) */
     unsigned char d1c_bytes[16];/* first 16 bytes the CACHED read returns for d1_lba */
+    int           d1c_ptr;      /* the buffer POINTER odfs_cache_read returned, as
+                                 * int: a kernel-text-range value ⇒ a bad cache
+                                 * entry pointer/index; a heap value with garbage
+                                 * d1c_bytes ⇒ the buffer contents were corrupted. */
 };
 extern struct cdfs_diag_s cdfs_diag;
 /* TEMP DIAGNOSTIC -- remove */

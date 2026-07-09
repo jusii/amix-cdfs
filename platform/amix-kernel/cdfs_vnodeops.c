@@ -75,6 +75,7 @@ static void cdfs_diag_first_dir(int op, odfs_mount_t *mnt,
         ce = odfs_cache_read(&mnt->cache, lba, &csec);
         cdfs_diag.d1c_err = (int)ce;
         if (ce == ODFS_OK) {
+            cdfs_diag.d1c_ptr = (int)(size_t)csec;   /* buffer ptr: heap or text? */
             for (i = 0; i < 16u; i++)
                 cdfs_diag.d1c_bytes[i] = csec[i];
         }
