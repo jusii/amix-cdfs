@@ -850,7 +850,7 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
                                        const uint8_t *first_rec,
                                        odfs_node_t *node)
 {
-    uint8_t ident[255];
+    uint8_t *ident;
     uint8_t ident_len;
     size_t flags_off = high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS;
     int more = (first_rec[flags_off] & ISO_DR_FLAG_MULTI_EXTENT) != 0;
@@ -861,7 +861,13 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
         return ODFS_OK;
 
     /* Copy the identifier up front: the walk below reads further sectors,
-     * which may evict the cache entry first_rec points into. */
+     * which may evict the cache entry first_rec points into. The 255-byte
+     * buffer is heap-allocated, not a stack local — the small SVR4/AMIX
+     * kernel stack cannot spare it on the deep directory-walk chain. Only
+     * multi-extent files reach here, so the allocation is rare. */
+    ident = odfs_malloc(255);
+    if (ident == NULL)
+        return ODFS_ERR_NOMEM;
     ident_len = first_rec[ISO_DR_NAME_LEN];
     memcpy(ident, &first_rec[ISO_DR_NAME], ident_len);
 
@@ -875,8 +881,10 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
         odfs_err_t err;
 
         err = odfs_cache_read(cache, sector_lba, &sector);
-        if (err != ODFS_OK)
+        if (err != ODFS_OK) {
+            odfs_free(ident);
             return err;
+        }
 
         rec = sector + sector_off;
 
@@ -926,6 +934,7 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
     node->size = merged;
     node->extent.length = (merged > 0xFFFFFFFFULL) ? 0xFFFFFFFFUL
                                                    : (uint32_t)merged;
+    odfs_free(ident);
     return ODFS_OK;
 }
 

@@ -316,12 +316,16 @@ static size_t cdda_hex_encode(char *dst, size_t dst_size,
     return used;
 }
 
+/* CD-TEXT field scratch size (was a fixed stack array; now heap-allocated). */
+#define CDDA_CDTEXT_VALUE_MAX 256
+
 static int cdda_append_cdtext_record(char *buf, size_t buf_size, size_t *used,
                                      uint8_t type, uint8_t track, uint8_t block,
                                      int is_dbcs, const uint8_t *data,
                                      size_t data_size)
 {
-    char value[256];
+    char *value;
+    int ret;
     size_t start = 0;
     int value_count = 0;
 
@@ -347,6 +351,12 @@ static int cdda_append_cdtext_record(char *buf, size_t buf_size, size_t *used,
         return cdda_appendf(buf, buf_size, used, "<DBCS>\n");
     }
 
+    /* value scratch: heap, not a 256-byte stack local — keeps the frame small
+     * on the page-sized SVR4/AMIX kernel stack. Freed via the 'done' label. */
+    value = odfs_malloc(CDDA_CDTEXT_VALUE_MAX);
+    if (!value)
+        return 0;
+
     if (type >= 0x80 && type <= 0x85) {
         while (start < data_size) {
             size_t end = start;
@@ -354,27 +364,35 @@ static int cdda_append_cdtext_record(char *buf, size_t buf_size, size_t *used,
                 end++;
             if (end > start) {
                 if (value_count > 0) {
-                    if (!cdda_appendf(buf, buf_size, used, "; "))
-                        return 0;
+                    if (!cdda_appendf(buf, buf_size, used, "; ")) {
+                        ret = 0; goto done;
+                    }
                 }
-                cdda_sanitize_ascii(value, sizeof(value),
+                cdda_sanitize_ascii(value, CDDA_CDTEXT_VALUE_MAX,
                                     data + start, end - start);
-                if (!cdda_appendf(buf, buf_size, used, "%s", value))
-                    return 0;
+                if (!cdda_appendf(buf, buf_size, used, "%s", value)) {
+                    ret = 0; goto done;
+                }
                 value_count++;
             }
             start = end + 1;
         }
-        return cdda_appendf(buf, buf_size, used, "\n");
+        ret = cdda_appendf(buf, buf_size, used, "\n");
+        goto done;
     }
 
     if (type == 0x8e) {
-        cdda_sanitize_ascii(value, sizeof(value), data, data_size);
-        return cdda_appendf(buf, buf_size, used, "%s\n", value);
+        cdda_sanitize_ascii(value, CDDA_CDTEXT_VALUE_MAX, data, data_size);
+        ret = cdda_appendf(buf, buf_size, used, "%s\n", value);
+        goto done;
     }
 
-    cdda_hex_encode(value, sizeof(value), data, data_size);
-    return cdda_appendf(buf, buf_size, used, "%s\n", value);
+    cdda_hex_encode(value, CDDA_CDTEXT_VALUE_MAX, data, data_size);
+    ret = cdda_appendf(buf, buf_size, used, "%s\n", value);
+
+done:
+    odfs_free(value);
+    return ret;
 }
 
 static void cdda_generate_cdtext(cdda_context_t *ctx)

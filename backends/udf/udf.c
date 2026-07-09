@@ -925,6 +925,10 @@ static odfs_err_t udf_lookup(void *backend_ctx,
 /* readlink                                                            */
 /* ------------------------------------------------------------------ */
 
+/* Symlink scratch sizes (were fixed stack arrays; now heap-allocated). */
+#define UDF_SYMLINK_DATA_MAX 512
+#define UDF_SYMLINK_COMP_MAX 256
+
 /*
  * A UDF symlink's file data is a sequence of Path Component records
  * (ECMA-167 4/14.16.1): componentType (1), identifier length (1),
@@ -941,7 +945,8 @@ static odfs_err_t udf_readlink(void *backend_ctx,
 {
     udf_context_t *ctx = backend_ctx;
     odfs_node_t node;
-    uint8_t data[512];
+    uint8_t *data;
+    char *comp;
     size_t len;
     size_t pos = 0;
     size_t out = 0;
@@ -954,13 +959,25 @@ static odfs_err_t udf_readlink(void *backend_ctx,
         return err;
     if (node.kind != ODFS_NODE_SYMLINK)
         return ODFS_ERR_UNSUPPORTED;
-    if (node.size == 0 || node.size > sizeof(data))
+    if (node.size == 0 || node.size > UDF_SYMLINK_DATA_MAX)
         return ODFS_ERR_UNSUPPORTED;
+
+    /*
+     * The symlink target buffer (512 B) and per-component scratch (256 B) are
+     * heap-allocated, not stack locals: 768 bytes of stack in this path would
+     * risk overrunning the small SVR4/AMIX kernel stack. The 'done' label
+     * frees both on every exit.
+     */
+    data = odfs_malloc(UDF_SYMLINK_DATA_MAX);
+    if (!data)
+        return ODFS_ERR_NOMEM;
+    comp = odfs_malloc(UDF_SYMLINK_COMP_MAX);
+    if (!comp) { odfs_free(data); return ODFS_ERR_NOMEM; }
 
     len = (size_t)node.size;
     err = udf_read(backend_ctx, cache, log, &node, 0, data, &len);
     if (err != ODFS_OK)
-        return err;
+        goto done;
 
     /*
      * Some implementations (notably macOS hdiutil) store the target as a
@@ -969,17 +986,16 @@ static odfs_err_t udf_readlink(void *backend_ctx,
      * byte tells the two encodings apart.
      */
     if (len > 0 && data[0] > 5) {
-        if (len >= buf_size)
-            return ODFS_ERR_NAME_TOO_LONG;
+        if (len >= buf_size) { err = ODFS_ERR_NAME_TOO_LONG; goto done; }
         memcpy(buf, data, len);
         buf[len] = '\0';
-        return ODFS_OK;
+        err = ODFS_OK;
+        goto done;
     }
 
     while (pos + 4 <= len) {
         uint8_t ctype = data[pos];
         uint8_t clen = data[pos + 1];
-        char comp[256];
         size_t comp_len;
 
         if (pos + 4 + clen > len)
@@ -989,8 +1005,7 @@ static odfs_err_t udf_readlink(void *backend_ctx,
         case 1: /* path outside this volume's scope — treat as root */
         case 2: /* restart from the root: absolute path */
             out = 0;
-            if (out + 1 >= buf_size)
-                return ODFS_ERR_NAME_TOO_LONG;
+            if (out + 1 >= buf_size) { err = ODFS_ERR_NAME_TOO_LONG; goto done; }
             buf[out++] = '/';
             break;
         case 3: /* parent directory */
@@ -1001,18 +1016,16 @@ static odfs_err_t udf_readlink(void *backend_ctx,
         case 4: /* current directory — no-op */
             break;
         case 5: /* named component */
-            udf_decode_cs0(&data[pos + 4], clen, comp, sizeof(comp));
+            udf_decode_cs0(&data[pos + 4], clen, comp, UDF_SYMLINK_COMP_MAX);
             if (comp[0] == '\0')
                 break;
         append:
             comp_len = strlen(comp);
             if (out > 0 && buf[out - 1] != '/') {
-                if (out + 1 >= buf_size)
-                    return ODFS_ERR_NAME_TOO_LONG;
+                if (out + 1 >= buf_size) { err = ODFS_ERR_NAME_TOO_LONG; goto done; }
                 buf[out++] = '/';
             }
-            if (out + comp_len >= buf_size)
-                return ODFS_ERR_NAME_TOO_LONG;
+            if (out + comp_len >= buf_size) { err = ODFS_ERR_NAME_TOO_LONG; goto done; }
             memcpy(buf + out, comp, comp_len);
             out += comp_len;
             break;
@@ -1023,11 +1036,15 @@ static odfs_err_t udf_readlink(void *backend_ctx,
         pos += 4u + clen;
     }
 
-    if (out == 0)
-        return ODFS_ERR_UNSUPPORTED;
+    if (out == 0) { err = ODFS_ERR_UNSUPPORTED; goto done; }
 
     buf[out] = '\0';
-    return ODFS_OK;
+    err = ODFS_OK;
+
+done:
+    odfs_free(data);
+    odfs_free(comp);
+    return err;
 }
 
 /* ------------------------------------------------------------------ */

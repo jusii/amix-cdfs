@@ -6,9 +6,17 @@
 
 #include "odfs/api.h"
 #include "odfs/ancestry.h"
+#include "odfs/alloc.h"
 #include "odfs/string.h"
 #include <string.h>
 #include <inttypes.h>
+
+/*
+ * Upper bound on session-start candidates probed during mount. Kept off the
+ * stack (see odfs_mount): a 100-entry array is 400 bytes, too much for the
+ * small SVR4/AMIX kernel stack when combined with the rest of the mount chain.
+ */
+#define ODFS_MOUNT_MAX_SESSIONS 100
 
 /* backend registrations */
 #if ODFS_FEATURE_ISO9660
@@ -58,7 +66,6 @@ static size_t mount_build_session_candidates(odfs_mount_t *mnt,
                                              uint32_t *starts,
                                              size_t max_starts)
 {
-    odfs_toc_t toc;
     size_t count = 0;
 
     if (!mnt || !starts || max_starts == 0)
@@ -70,25 +77,36 @@ static size_t mount_build_session_candidates(odfs_mount_t *mnt,
     if (mnt->opts.force_session >= 0)
         return count;
 
-    if (odfs_media_read_toc(&mnt->media, &toc) == ODFS_OK) {
-        int i;
+    /* The TOC is ~1200 bytes (99-entry session array); allocate it on the heap
+     * rather than the small SVR4/AMIX kernel stack. On OOM, just use the
+     * preferred start that was already recorded above. */
+    {
+        odfs_toc_t *toc = odfs_malloc(sizeof(*toc));
 
-        for (i = (int)toc.session_count - 1; i >= 0 && count < max_starts; i--) {
-            uint32_t start = toc.sessions[i].start_lba;
-            int duplicate = 0;
-            size_t j;
+        if (toc != NULL) {
+            if (odfs_media_read_toc(&mnt->media, toc) == ODFS_OK) {
+                int i;
 
-            if ((toc.sessions[i].control & 0x04) == 0)
-                continue;
+                for (i = (int)toc->session_count - 1;
+                     i >= 0 && count < max_starts; i--) {
+                    uint32_t start = toc->sessions[i].start_lba;
+                    int duplicate = 0;
+                    size_t j;
 
-            for (j = 0; j < count; j++) {
-                if (starts[j] == start) {
-                    duplicate = 1;
-                    break;
+                    if ((toc->sessions[i].control & 0x04) == 0)
+                        continue;
+
+                    for (j = 0; j < count; j++) {
+                        if (starts[j] == start) {
+                            duplicate = 1;
+                            break;
+                        }
+                    }
+                    if (!duplicate)
+                        starts[count++] = start;
                 }
             }
-            if (!duplicate)
-                starts[count++] = start;
+            odfs_free(toc);
         }
     }
 #endif
@@ -330,7 +348,7 @@ odfs_err_t odfs_mount(odfs_media_t *media,
 {
     odfs_err_t err;
     uint32_t cache_size;
-    uint32_t session_candidates[100];
+    uint32_t *session_candidates;
     size_t session_count;
     size_t session_index;
     uint32_t session_start;
@@ -381,14 +399,19 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     session_start = 0;
 #if ODFS_FEATURE_MULTISESSION
     if (mnt->opts.force_session >= 0) {
-        /* user forced a specific session — read TOC to find it */
-        odfs_toc_t toc;
-        if (odfs_media_read_toc(&mnt->media, &toc) == ODFS_OK &&
-            mnt->opts.force_session < toc.session_count) {
-            session_start = toc.sessions[mnt->opts.force_session].start_lba;
-            ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
-                       "forced session %d at LBA %" PRIu32,
-                       mnt->opts.force_session, session_start);
+        /* user forced a specific session — read TOC to find it. The TOC is
+         * ~1200 bytes; keep it off the small SVR4/AMIX kernel stack. */
+        odfs_toc_t *toc = odfs_malloc(sizeof(*toc));
+        if (toc != NULL) {
+            if (odfs_media_read_toc(&mnt->media, toc) == ODFS_OK &&
+                mnt->opts.force_session < toc->session_count) {
+                session_start =
+                    toc->sessions[mnt->opts.force_session].start_lba;
+                ODFS_INFO(&mnt->log, ODFS_SUB_MOUNT,
+                           "forced session %d at LBA %" PRIu32,
+                           mnt->opts.force_session, session_start);
+            }
+            odfs_free(toc);
         }
     } else {
         /* default: find and use last session */
@@ -396,10 +419,24 @@ odfs_err_t odfs_mount(odfs_media_t *media,
     }
 #endif
 
+    /*
+     * The candidate list is heap-allocated rather than a stack array: on the
+     * SVR4/AMIX kernel stack a 400-byte local combined with the deep mount
+     * call chain risks a stack overflow into adjacent kernel memory.
+     */
+    session_candidates = odfs_calloc(ODFS_MOUNT_MAX_SESSIONS,
+                                     sizeof(*session_candidates));
+    if (session_candidates == NULL) {
+#if ODFS_FEATURE_CACHE_META
+        odfs_meta_cache_destroy(&mnt->meta);
+#endif
+        odfs_cache_destroy(&mnt->cache);
+        return ODFS_ERR_NOMEM;
+    }
+
     session_count = mount_build_session_candidates(mnt, session_start,
                                                    session_candidates,
-                                                   sizeof(session_candidates) /
-                                                   sizeof(session_candidates[0]));
+                                                   ODFS_MOUNT_MAX_SESSIONS);
 
     err = ODFS_ERR_BAD_FORMAT;
     for (session_index = 0; session_index < session_count; session_index++) {
@@ -419,6 +456,8 @@ odfs_err_t odfs_mount(odfs_media_t *media,
             break;
         }
     }
+
+    odfs_free(session_candidates);
 
     if (err != ODFS_OK) {
         ODFS_WARN(&mnt->log, ODFS_SUB_MOUNT,

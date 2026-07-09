@@ -255,15 +255,22 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
     hfsplus_context_t *ctx;
     uint64_t vh_offset;
     odfs_err_t err;
-    uint8_t vh[512];
+    uint8_t *vh;
     uint16_t sig;
 
     ctx = odfs_calloc(1, sizeof(*ctx));
     if (!ctx) return ODFS_ERR_NOMEM;
     ctx->next_node_id = 1;
 
+    /* The Volume Header (and, below, the catalog B-Tree header node) are
+     * sector-sized and must NOT sit on the stack: two 512-byte locals would
+     * overrun the small SVR4/AMIX kernel stack in the mount path. Heap-allocate
+     * the VH; the single 'fail' cleanup label frees it on every error exit. */
+    vh = odfs_malloc(512);
+    if (!vh) { odfs_free(ctx); return ODFS_ERR_NOMEM; }
+
     err = hfsp_find_vh(cache, session_start, &vh_offset);
-    if (err != ODFS_OK) { odfs_free(ctx); return err; }
+    if (err != ODFS_OK) goto fail;
 
     /* volume start is 1024 bytes before VH */
     ctx->vol_offset = vh_offset - HFSPLUS_VH_OFFSET;
@@ -275,7 +282,7 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         const uint8_t *sector;
         size_t avail;
         err = odfs_cache_read(cache, lba, &sector);
-        if (err != ODFS_OK) { odfs_free(ctx); return err; }
+        if (err != ODFS_OK) goto fail;
         /* VH might span two sectors if misaligned */
         avail = 2048 - off;
         if (avail >= 512) {
@@ -283,21 +290,21 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         } else {
             memcpy(vh, sector + off, avail);
             err = odfs_cache_read(cache, lba + 1, &sector);
-            if (err != ODFS_OK) { odfs_free(ctx); return err; }
+            if (err != ODFS_OK) goto fail;
             memcpy(vh + avail, sector, 512 - avail);
         }
     }
 
     sig = hfsp_be16(&vh[0]);
     if (sig != HFSPLUS_SIG && sig != HFSX_SIG) {
-        odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
+        err = ODFS_ERR_BAD_FORMAT; goto fail;
     }
 
     ctx->block_size   = hfsp_be32(&vh[40]);
     ctx->total_blocks = hfsp_be32(&vh[44]);
 
     if (ctx->block_size == 0 || ctx->block_size > 65536) {
-        odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
+        err = ODFS_ERR_BAD_FORMAT; goto fail;
     }
 
     ODFS_INFO(log, ODFS_SUB_HFSPLUS,
@@ -309,16 +316,18 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
 
     /* read catalog B-Tree header node */
     {
-        /* first, read just enough to get node size from header */
-        uint8_t hdr_buf[512];
+        /* first, read just enough to get node size from header — heap, not
+         * a 512-byte stack local (see the VH allocation above) */
+        uint8_t *hdr_buf = odfs_malloc(512);
+        if (!hdr_buf) { err = ODFS_ERR_NOMEM; goto fail; }
         /* read first 512 bytes of catalog file */
         err = hfsp_read_fork(ctx, cache, &ctx->cat_fork, 0, hdr_buf, 512);
-        if (err != ODFS_OK) { odfs_free(ctx); return err; }
+        if (err != ODFS_OK) { odfs_free(hdr_buf); goto fail; }
 
         if (hdr_buf[8] != 0x01) { /* node type: header */
             ODFS_ERROR(log, ODFS_SUB_HFSPLUS,
                         "catalog header node type %u", hdr_buf[8]);
-            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(hdr_buf); err = ODFS_ERR_BAD_FORMAT; goto fail;
         }
 
         /* header record at offset 14 in the node */
@@ -329,12 +338,13 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
         ctx->cat_node_size  = hfsp_be16(&hdr_buf[14 + 2 + 4 + 4 + 4 + 4]);
 
         if (ctx->cat_node_size < 14 || ctx->cat_node_size > 32768) {
-            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(hdr_buf); err = ODFS_ERR_BAD_FORMAT; goto fail;
         }
 
         ODFS_INFO(log, ODFS_SUB_HFSPLUS,
                    "catalog: root %" PRIu32 ", node size %" PRIu32,
                    ctx->cat_root_node, ctx->cat_node_size);
+        odfs_free(hdr_buf);
     }
 
     /* try to get volume name from the catalog (root folder thread) */
@@ -408,7 +418,13 @@ static odfs_err_t hfsp_mount(odfs_cache_t *cache,
     ctx->root = *root_out;
 
     *backend_ctx = ctx;
+    odfs_free(vh);
     return ODFS_OK;
+
+fail:
+    odfs_free(vh);
+    odfs_free(ctx);
+    return err;
 }
 
 static void hfsp_unmount(void *backend_ctx)

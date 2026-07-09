@@ -6,10 +6,14 @@
 
 #include "odfs/log.h"
 #include "odfs/printf.h"
+#include "odfs/alloc.h"
 #if !defined(ODFS_PLATFORM_AMIX_KERNEL)
 #include <stdio.h>   /* not present / not used in the AMIX kernel build */
 #endif
 #include <string.h>
+
+/* Formatting buffer size for a single emitted log line. */
+#define ODFS_LOG_BUF_SIZE 512
 
 static const char *level_names[] = {
     [ODFS_LOG_FATAL] = "FATAL",
@@ -82,27 +86,41 @@ static void odfs_vlog(odfs_log_state_t *state,
                       odfs_log_subsys_t subsys,
                       const char *fmt, va_list ap)
 {
-    char buf[512];
+    char *buf;
     int hdr;
 
     if (!odfs_log_enabled(state, level, subsys))
         return;
 
+    /*
+     * Allocate the 512-byte line buffer on the heap, and only after the
+     * message has passed the level/subsystem filter — the filtered-out path
+     * (the common case, and the ONLY case in the AMIX kernel where the sink
+     * is NULL) then carries no sector-fraction frame at all. This matters on
+     * the small SVR4/AMIX kernel stack, where log calls sit deep in the
+     * mount/read call chain.
+     */
+    buf = odfs_malloc(ODFS_LOG_BUF_SIZE);
+    if (!buf)
+        return;
+
     if (subsys == ODFS_SUB_NONE) {
-        hdr = odfs_snprintf(buf, sizeof(buf), "[%s] ",
+        hdr = odfs_snprintf(buf, ODFS_LOG_BUF_SIZE, "[%s] ",
                             odfs_log_level_name(level));
     } else {
-        hdr = odfs_snprintf(buf, sizeof(buf), "[%s] %s: ",
+        hdr = odfs_snprintf(buf, ODFS_LOG_BUF_SIZE, "[%s] %s: ",
                             odfs_log_level_name(level),
                             odfs_log_subsys_name(subsys));
     }
     if (hdr < 0)
         hdr = 0;
 
-    if ((size_t)hdr < sizeof(buf))
-        odfs_vsnprintf(buf + hdr, sizeof(buf) - hdr, fmt, ap);
+    if ((size_t)hdr < (size_t)ODFS_LOG_BUF_SIZE)
+        odfs_vsnprintf(buf + hdr, (size_t)ODFS_LOG_BUF_SIZE - (size_t)hdr,
+                       fmt, ap);
 
     state->sink.write(level, subsys, buf, state->sink.ctx);
+    odfs_free(buf);
 }
 
 void odfs_log(odfs_log_state_t *state,

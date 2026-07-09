@@ -303,15 +303,20 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
                "volume: \"%s\", alloc blocks: %u, block size: %" PRIu32,
                ctx->volume_name, ctx->num_alloc_blocks, ctx->alloc_block_size);
 
-    /* read catalog B-tree header node */
+    /* read catalog B-tree header node.
+     * hdr_buf is heap-allocated, not a 512-byte stack local: the SVR4/AMIX
+     * kernel stack is only a page or two and cannot spare a sector-sized
+     * frame in the mount path. */
     {
-        uint8_t hdr_buf[512];
+        uint8_t *hdr_buf = odfs_malloc(512);
+        if (hdr_buf == NULL) { odfs_free(ctx); return ODFS_ERR_NOMEM; }
+
         err = hfs_read_node(ctx, cache, 0, hdr_buf);
-        if (err != ODFS_OK) { odfs_free(ctx); return err; }
+        if (err != ODFS_OK) { odfs_free(hdr_buf); odfs_free(ctx); return err; }
 
         if (hdr_buf[8] != HFS_NODE_HEADER) {
             ODFS_ERROR(log, ODFS_SUB_HFS, "catalog header node type %u", hdr_buf[8]);
-            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(hdr_buf); odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
 
         ctx->cat_root_node = hfs_be32(&hdr_buf[16]);
@@ -319,12 +324,13 @@ static odfs_err_t hfs_mount(odfs_cache_t *cache,
         ctx->cat_node_size = hfs_be16(&hdr_buf[32]);
 
         if (ctx->cat_node_size < 14 || ctx->cat_node_size > 32768) {
-            odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
+            odfs_free(hdr_buf); odfs_free(ctx); return ODFS_ERR_BAD_FORMAT;
         }
 
         ODFS_INFO(log, ODFS_SUB_HFS,
                    "catalog: root node %" PRIu32 ", node size %" PRIu32,
                    ctx->cat_root_node, ctx->cat_node_size);
+        odfs_free(hdr_buf);
     }
 
     /* build root node */

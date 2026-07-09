@@ -13,6 +13,7 @@
 #include "odfs/media.h"
 #include "odfs/log.h"
 #include "odfs/config.h"
+#include "odfs/alloc.h"
 
 #include <string.h>
 #include <inttypes.h>
@@ -39,7 +40,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
                                     uint32_t *last_lba_out)
 {
     odfs_err_t err;
-    odfs_toc_t toc;
+    odfs_toc_t *toc;
     int have_toc = 0;
     uint8_t i;
 
@@ -47,15 +48,24 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
 
     *last_lba_out = 0;
 
-    memset(&toc, 0, sizeof(toc));
+    /*
+     * The TOC (odfs_toc_t is ~1200 bytes: a 99-entry session array) is heap-
+     * allocated, not a stack local — the small SVR4/AMIX kernel stack cannot
+     * carry it on the mount call chain, especially nested under odfs_mount's
+     * own frame. If it can't be allocated, skip the TOC strategies and fall
+     * through to the PVD scan (which uses LBA 0 when it finds nothing).
+     */
+    toc = odfs_calloc(1, sizeof(*toc));
+    if (toc == NULL)
+        goto pvd_scan;
 
     /* strategy 1: explicit last-session query */
     err = odfs_media_read_last_session_lba(media, last_lba_out);
     if (err == ODFS_OK) {
         uint32_t explicit_lba = *last_lba_out;
 
-        err = odfs_media_read_toc(media, &toc);
-        if (err == ODFS_OK && toc.session_count > 0) {
+        err = odfs_media_read_toc(media, toc);
+        if (err == ODFS_OK && toc->session_count > 0) {
             have_toc = 1;
 
             /*
@@ -63,13 +73,13 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
              * discs. For filesystem probing we want the first data track in
              * that session, not necessarily the session's first track.
              */
-            for (i = 0; i < toc.session_count; i++) {
-                if ((toc.sessions[i].control & 0x04) == 0)
+            for (i = 0; i < toc->session_count; i++) {
+                if ((toc->sessions[i].control & 0x04) == 0)
                     continue;
-                if (toc.sessions[i].start_lba < explicit_lba)
+                if (toc->sessions[i].start_lba < explicit_lba)
                     continue;
 
-                *last_lba_out = toc.sessions[i].start_lba;
+                *last_lba_out = toc->sessions[i].start_lba;
                 if (*last_lba_out != explicit_lba) {
                     ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                               "explicit last session starts at LBA %" PRIu32
@@ -80,6 +90,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
                               "explicit last session starts at LBA %" PRIu32,
                               *last_lba_out);
                 }
+                odfs_free(toc);
                 return ODFS_OK;
             }
         }
@@ -87,6 +98,7 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
         ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                   "explicit last session starts at LBA %" PRIu32,
                   *last_lba_out);
+        odfs_free(toc);
         return ODFS_OK;
     }
     if (err != ODFS_ERR_UNSUPPORTED) {
@@ -98,14 +110,14 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
 
     /* strategy 2: device TOC heuristic */
     if (!have_toc) {
-        err = odfs_media_read_toc(media, &toc);
+        err = odfs_media_read_toc(media, toc);
     }
-    if (err == ODFS_OK && toc.session_count > 0) {
+    if (err == ODFS_OK && toc->session_count > 0) {
         int found_data = 0;
         uint8_t last = 0;
 
-        for (i = 0; i < toc.session_count; i++) {
-            if ((toc.sessions[i].control & 0x04) != 0) {
+        for (i = 0; i < toc->session_count; i++) {
+            if ((toc->sessions[i].control & 0x04) != 0) {
                 last = i;
                 found_data = 1;
             }
@@ -115,27 +127,44 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
             ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                       "TOC: %" PRIu32
                       " track(s), no data track found; using LBA 0",
-                      (uint32_t)toc.session_count);
+                      (uint32_t)toc->session_count);
+            odfs_free(toc);
             return ODFS_OK;
         }
 
-        *last_lba_out = toc.sessions[last].start_lba;
+        *last_lba_out = toc->sessions[last].start_lba;
         ODFS_INFO(log, ODFS_SUB_MULTISESSION,
                    "TOC heuristic picked last data track "
                    "from %" PRIu32 " track(s) at LBA %" PRIu32,
-                   (uint32_t)toc.session_count, *last_lba_out);
+                   (uint32_t)toc->session_count, *last_lba_out);
+        odfs_free(toc);
         return ODFS_OK;
     }
 
+    odfs_free(toc);
+
+pvd_scan:
     /* strategy 3: scan for PVD signatures (host images) */
     {
         uint32_t total = odfs_media_sector_count(media);
         uint32_t best_lba = 0;
-        uint8_t buf[ISO_SECTOR_SIZE];
+        uint8_t *buf;
         uint32_t lba;
 
         if (total == 0)
             return ODFS_OK; /* unknown size, use LBA 0 */
+
+        /*
+         * A full 2048-byte sector must NOT live on the stack: the SVR4/AMIX
+         * kernel stack is only a page or two, and this scan runs deep in the
+         * mount call chain, so a stack sector buffer overruns the adjacent
+         * u-area. Heap-allocate it — the mount path runs once, so the cost is
+         * irrelevant, and the fix benefits every target (stack sector buffers
+         * are fragile everywhere).
+         */
+        buf = odfs_malloc(ISO_SECTOR_SIZE);
+        if (buf == NULL)
+            return ODFS_OK; /* no scan buffer: fall back to first session */
 
         /*
          * Scan every potential PVD location. A session's PVD is at
@@ -175,6 +204,8 @@ odfs_err_t odfs_find_last_session(odfs_media_t *media,
                        "PVD scan found last session at LBA %" PRIu32,
                        best_lba);
         }
+
+        odfs_free(buf);
     }
 
     return ODFS_OK;
