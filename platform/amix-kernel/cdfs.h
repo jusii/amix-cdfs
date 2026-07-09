@@ -185,6 +185,15 @@ struct cdfs_diag_s {
     int           m_rootlen;    /* cvfs->mnt.root.extent.length */
     int           m_rootbk;     /* cvfs->mnt.root.backend (5=ROCK_RIDGE) */
     int           m_rootkind;   /* cvfs->mnt.root.kind (1=DIR) */
+    /*
+     * The CACHED read (through the odfs block cache — what odfs_readdir/
+     * odfs_lookup actually walk) of the same dir sector, captured alongside the
+     * cache-bypassing d1_bytes above. Equal to d1_bytes ⇒ the cache is fine and
+     * the enumeration bug is in the walk (e.g. a garbage rr_info_t tail);
+     * differ ⇒ the block cache returns divergent data for that LBA.
+     */
+    int           d1c_err;      /* odfs_cache_read of d1_lba: err (-2 = skipped) */
+    unsigned char d1c_bytes[16];/* first 16 bytes the CACHED read returns for d1_lba */
 };
 extern struct cdfs_diag_s cdfs_diag;
 /* TEMP DIAGNOSTIC -- remove */

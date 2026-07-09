@@ -55,10 +55,18 @@ void *memset(s, c, n)
     unsigned char  v = (unsigned char)c;
     size_t         i;
 
-    if (v == 0) {
-        bzero((caddr_t)s, n);
-        return s;
-    }
+    /*
+     * Own byte loop for EVERY value of c, including 0 — do NOT delegate the
+     * zero-fill to the kernel's bzero. Bench evidence: a ~1.1 KB rr_info_t
+     * cleared with memset kept garbage in its TAIL fields (is_relocated /
+     * has_child_link, both at offset > 1024). The uncleared is_relocated made
+     * the ISO readdir treat every child as a Rock Ridge relocation and skip it
+     * (a directory that reads as empty), and an uncleared has_child_link had
+     * clobbered the root node's extent. So the kernel's bzero does not reliably
+     * clear a large region in this context; this loop clears the whole range
+     * unconditionally. -fno-builtin (Makefile per-object) stops GCC from
+     * recognizing the loop and emitting a memset self-call.
+     */
     for (i = 0; i < n; i++)
         p[i] = v;
     return s;

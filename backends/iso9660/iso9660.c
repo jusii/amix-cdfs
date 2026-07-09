@@ -517,8 +517,12 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         if (ctx->has_rock_ridge && sua && sua_len > 0) {
             /* rr_info_t is ~1.1 KB (two 512-byte name/target buffers); build it
              * on the heap, never the small SVR4/AMIX kernel stack. Scoped to
-             * this block, so it needs no bookkeeping on the loop's exits. */
-            rr_info_t *rr = odfs_malloc(sizeof(*rr));
+             * this block, so it needs no bookkeeping on the loop's exits.
+             * odfs_calloc (kmem_zalloc) pre-zeroes it: rr_parse memsets it too,
+             * but this guarantees the tail (is_relocated/has_child_link, offset
+             * >1024) is clear even if a large in-place clear is unreliable — a
+             * stray is_relocated would skip every child and read as empty. */
+            rr_info_t *rr = odfs_calloc(1, sizeof(*rr));
             if (rr == NULL) {
                 odfs_namefix_destroy(&namefix);
                 odfs_free(node);
@@ -693,9 +697,11 @@ static odfs_err_t iso_readlink(void *backend_ctx,
 
     /* node (~660 B) and rr_info_t (~1.1 KB) are heap scratch, not stack locals:
      * together they would overrun the small SVR4/AMIX kernel stack. The 'done'
-     * label frees both on every exit. */
+     * label frees both on every exit. rr is odfs_calloc'd (pre-zeroed): its
+     * tail fields (is_relocated etc., offset >1024) must be clear even if a
+     * large in-place clear is unreliable on this kernel. */
     node = odfs_malloc(sizeof(*node));
-    rr = odfs_malloc(sizeof(*rr));
+    rr = odfs_calloc(1, sizeof(*rr));
     if (node == NULL || rr == NULL) {
         odfs_free(node);
         odfs_free(rr);

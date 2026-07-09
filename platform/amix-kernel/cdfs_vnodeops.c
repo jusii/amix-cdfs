@@ -66,10 +66,23 @@ static void cdfs_diag_first_dir(int op, odfs_mount_t *mnt,
      */
     scount = odfs_media_sector_count(&mnt->media);
     if (lba != 0 && scount != 0 && lba < scount) {
-        unsigned char *tmp = (unsigned char *)kmem_alloc((size_t)2048, KM_SLEEP);
+        unsigned char  *tmp;
+        const uint8_t  *csec;
+        odfs_err_t      ce;
+        unsigned int    i;
+
+        /* CACHED read — the same block cache odfs_readdir/odfs_lookup walk. */
+        ce = odfs_cache_read(&mnt->cache, lba, &csec);
+        cdfs_diag.d1c_err = (int)ce;
+        if (ce == ODFS_OK) {
+            for (i = 0; i < 16u; i++)
+                cdfs_diag.d1c_bytes[i] = csec[i];
+        }
+
+        /* DIRECT read — bypasses the cache, straight from the media backend. */
+        tmp = (unsigned char *)kmem_alloc((size_t)2048, KM_SLEEP);
         if (tmp != 0) {
-            odfs_err_t   re = odfs_media_read(&mnt->media, lba, 1, tmp);
-            unsigned int i;
+            odfs_err_t re = odfs_media_read(&mnt->media, lba, 1, tmp);
             cdfs_diag.d1_rderr = (int)re;
             for (i = 0; i < 16u; i++)
                 cdfs_diag.d1_bytes[i] = tmp[i];
@@ -79,6 +92,7 @@ static void cdfs_diag_first_dir(int op, odfs_mount_t *mnt,
         }
     } else {
         cdfs_diag.d1_rderr = -2;   /* skipped: LBA out of [1, scount) */
+        cdfs_diag.d1c_err  = -2;
     }
 
     cdfs_diag.d1_set = 1;   /* set LAST */
