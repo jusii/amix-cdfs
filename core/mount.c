@@ -673,8 +673,8 @@ odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
                                const char *path,
                                odfs_node_t *out)
 {
-    odfs_node_t current;
-    char component[ODFS_NAME_MAX];
+    odfs_node_t *current;
+    char *component;
     const char *p;
     size_t len;
     odfs_err_t err;
@@ -682,7 +682,18 @@ odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
     if (!mnt || !path || !out)
         return ODFS_ERR_INVAL;
 
-    current = mnt->root;
+    /* current (~660 B) + component (ODFS_NAME_MAX) are heap scratch, not stack
+     * locals: on the small SVR4/AMIX kernel stack a full-path resolve must not
+     * carry ~1.2 KB of frame. The 'done' label frees both on every exit. */
+    current = odfs_malloc(sizeof(*current));
+    component = odfs_malloc((size_t)ODFS_NAME_MAX);
+    if (current == NULL || component == NULL) {
+        odfs_free(current);
+        odfs_free(component);
+        return ODFS_ERR_NOMEM;
+    }
+
+    *current = mnt->root;
 
     /* skip leading separator */
     p = path;
@@ -690,8 +701,9 @@ odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
         p++;
 
     if (*p == '\0') {
-        *out = current;
-        return ODFS_OK;
+        *out = *current;
+        err = ODFS_OK;
+        goto done;
     }
 
     while (*p) {
@@ -704,28 +716,35 @@ odfs_err_t odfs_resolve_path(odfs_mount_t *mnt,
             p = slash + 1;
             continue;
         }
-        if (len >= ODFS_NAME_MAX)
-            return ODFS_ERR_NAME_TOO_LONG;
+        if (len >= ODFS_NAME_MAX) {
+            err = ODFS_ERR_NAME_TOO_LONG;
+            goto done;
+        }
 
         memcpy(component, p, len);
         component[len] = '\0';
 
-        if (mount_virtual_root_by_name(mnt, &current, component, &current)) {
+        if (mount_virtual_root_by_name(mnt, current, component, current)) {
             p = slash;
             while (*p == '/')
                 p++;
             continue;
         }
 
-        err = odfs_lookup(mnt, &current, component, &current);
+        err = odfs_lookup(mnt, current, component, current);
         if (err != ODFS_OK)
-            return err;
+            goto done;
 
         p = slash;
         while (*p == '/')
             p++;
     }
 
-    *out = current;
-    return ODFS_OK;
+    *out = *current;
+    err = ODFS_OK;
+
+done:
+    odfs_free(current);
+    odfs_free(component);
+    return err;
 }

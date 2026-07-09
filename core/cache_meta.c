@@ -363,24 +363,32 @@ static odfs_err_t meta_replay(const odfs_meta_dir_t *d,
 {
     uint32_t i = 0;
     odfs_err_t err;
+    odfs_node_t *node;
 
     if (resume_offset && *resume_offset)
         i = *resume_offset & ~ODFS_META_COOKIE_TAG;
 
-    for (; i < d->count; i++) {
-        odfs_node_t node;
+    /* Reconstructed node on the heap, reused across entries: a ~660 B node on
+     * the stack would overrun the small SVR4/AMIX kernel stack in the readdir
+     * serve path. */
+    node = odfs_malloc(sizeof(*node));
+    if (node == NULL)
+        return ODFS_ERR_NOMEM;
 
-        meta_entry_to_node(d, &d->entries[i], &node);
-        err = callback(&node, cb_ctx);
+    for (; i < d->count; i++) {
+        meta_entry_to_node(d, &d->entries[i], node);
+        err = callback(node, cb_ctx);
         if (err != ODFS_OK) {
             if (resume_offset)
                 *resume_offset = ODFS_META_COOKIE_TAG | (i + 1u);
+            odfs_free(node);
             return err;
         }
     }
 
     if (resume_offset)
         *resume_offset = ODFS_META_COOKIE_TAG | d->count;
+    odfs_free(node);
     return ODFS_OK;
 }
 

@@ -526,8 +526,9 @@ static odfs_err_t joliet_resolve_parent(void *backend_ctx,
     uint32_t root_lba = ctx->svd.root_dir_lba;
     uint32_t parent_lba, parent_size;
     uint32_t gp_lba, gp_size;
-    odfs_node_t grandparent;
+    odfs_node_t *grandparent;
     odfs_err_t err;
+    odfs_err_t ret;
 
     if (dir->kind != ODFS_NODE_DIR)
         return ODFS_ERR_NOT_DIR;
@@ -551,45 +552,72 @@ static odfs_err_t joliet_resolve_parent(void *backend_ctx,
     if (err != ODFS_OK)
         return err;
 
+    /* grandparent (and 'great' below) are ~660 B nodes — heap, not stack, to
+     * spare the small SVR4/AMIX kernel stack on the ".." resolution path. The
+     * 'gp_done' label frees grandparent on every exit from here on. */
+    grandparent = odfs_calloc(1, sizeof(*grandparent));
+    if (grandparent == NULL)
+        return ODFS_ERR_NOMEM;
+
     if (gp_lba == root_lba)
-        grandparent = ctx->root;
+        *grandparent = ctx->root;
     else
-        grandparent = odfs_iso_dir_stub(dir->backend, gp_lba, gp_size);
+        odfs_iso_dir_stub(grandparent, dir->backend, gp_lba, gp_size);
 
-    err = joliet_find_child_by_lba(backend_ctx, cache, log, &grandparent,
+    err = joliet_find_child_by_lba(backend_ctx, cache, log, grandparent,
                                    parent_lba, parent_out);
-    if (err != ODFS_OK)
-        return err;
+    if (err != ODFS_OK) {
+        ret = err;
+        goto gp_done;
+    }
 
-    if (!grandparent_out)
-        return ODFS_OK;
+    if (!grandparent_out) {
+        ret = ODFS_OK;
+        goto gp_done;
+    }
 
     if (gp_lba == root_lba) {
         *grandparent_out = ctx->root;
-        return ODFS_OK;
+        ret = ODFS_OK;
+        goto gp_done;
     }
 
     {
         uint32_t ggp_lba, ggp_size;
-        odfs_node_t great;
+        odfs_node_t *great;
 
         err = odfs_iso_read_parent_extent(cache, ss, gp_lba,
                                           &ggp_lba, &ggp_size);
-        if (err != ODFS_OK)
-            return err;
+        if (err != ODFS_OK) {
+            ret = err;
+            goto gp_done;
+        }
+
+        great = odfs_calloc(1, sizeof(*great));
+        if (great == NULL) {
+            ret = ODFS_ERR_NOMEM;
+            goto gp_done;
+        }
 
         if (ggp_lba == root_lba)
-            great = ctx->root;
+            *great = ctx->root;
         else
-            great = odfs_iso_dir_stub(dir->backend, ggp_lba, ggp_size);
+            odfs_iso_dir_stub(great, dir->backend, ggp_lba, ggp_size);
 
-        err = joliet_find_child_by_lba(backend_ctx, cache, log, &great,
+        err = joliet_find_child_by_lba(backend_ctx, cache, log, great,
                                        gp_lba, grandparent_out);
-        if (err != ODFS_OK)
-            return err;
+        odfs_free(great);
+        if (err != ODFS_OK) {
+            ret = err;
+            goto gp_done;
+        }
     }
 
-    return ODFS_OK;
+    ret = ODFS_OK;
+
+gp_done:
+    odfs_free(grandparent);
+    return ret;
 }
 
 /* ------------------------------------------------------------------ */

@@ -156,6 +156,21 @@ struct cdfs_diag_s {
     int           r1_count;     /* ... count */
     int           r1_err;       /* ... the submit err (odfs_err_t as int) */
     unsigned char r1_bytes[16]; /* first 16 bytes of the buffer after the first read */
+    /*
+     * First post-mount directory read (readdir OR lookup, whichever runs
+     * first). Appended AFTER r1_bytes so the mount-time layout above is
+     * unchanged. d1_set is written LAST (like magic): non-zero means the
+     * eight fields below are fully populated. Same big-endian /dev/kmem parse
+     * rule — 4-byte ints, then a raw 16-byte array, no padding.
+     */
+    int           d1_set;       /* 0 until the first dir op fills the block */
+    int           d1_op;        /* 1 = cdfs_readdir, 2 = cdfs_lookup */
+    int           d1_lba;       /* dir->extent.lba the op enumerated */
+    int           d1_size;      /* dir->extent.length (dir byte size) */
+    int           d1_ret;       /* odfs_readdir/odfs_lookup return (as int) */
+    int           d1_cbcount;   /* readdir: child-callback fires; lookup: found */
+    int           d1_rderr;     /* direct media read of d1_lba: err (as int) */
+    unsigned char d1_bytes[16]; /* first 16 bytes the media backend returns for d1_lba */
 };
 extern struct cdfs_diag_s cdfs_diag;
 /* TEMP DIAGNOSTIC -- remove */

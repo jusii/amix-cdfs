@@ -412,10 +412,22 @@ static odfs_err_t iso_readdir(void *backend_ctx,
     uint32_t offset = 0;
     int lowercase = ctx->lowercase;
     odfs_namefix_state_t namefix;
+    odfs_node_t *node;
 
     ODFS_TRACE(log, ODFS_SUB_ISO,
                 "readdir: LBA %" PRIu32 ", size %" PRIu32, dir_lba, dir_size);
     odfs_namefix_init(&namefix);
+
+    /* The per-entry node is built on the heap and reused across iterations: a
+     * ~660 B node (kernel ODFS_NAME_MAX=512) on the stack would overrun the
+     * small SVR4/AMIX kernel stack under the readdir/lookup call chain. (The
+     * original stack local was itself reused across iterations, so a single
+     * reused heap buffer is behavior-identical.) */
+    node = odfs_malloc(sizeof(*node));
+    if (node == NULL) {
+        odfs_namefix_destroy(&namefix);
+        return ODFS_ERR_NOMEM;
+    }
 
     while (offset < dir_size) {
         uint32_t entry_start = offset;
@@ -425,7 +437,6 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         odfs_err_t err;
         const uint8_t *rec;
         size_t avail;
-        odfs_node_t node;
         const uint8_t *sua;
         size_t sua_len;
         int consumed;
@@ -434,6 +445,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         err = odfs_cache_read(cache, sector_lba, &sector);
         if (err != ODFS_OK) {
             odfs_namefix_destroy(&namefix);
+            odfs_free(node);
             return err;
         }
 
@@ -451,27 +463,28 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         consumed = iso_parse_dir_record(rec, avail, ctx->session_start,
                                         &ctx->next_node_id, lowercase,
                                         ctx->high_sierra,
-                                        &node, &sua, &sua_len);
+                                        node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
 
-        node.parent_id = dir->id;
+        node->parent_id = dir->id;
 
         next_offset = offset + (uint32_t)consumed;
 
         /* ISO Level 3: fold multi-extent continuation records into the node */
-        if (node.kind == ODFS_NODE_FILE &&
+        if (node->kind == ODFS_NODE_FILE &&
             (rec[ctx->high_sierra ? HS_DR_FLAGS : ISO_DR_FLAGS] &
              ISO_DR_FLAG_MULTI_EXTENT) != 0) {
             size_t sua_off = (sua && sua_len > 0) ? (size_t)(sua - rec) : 0;
 
             err = odfs_iso_merge_multi_extent(cache, log, ctx->session_start,
                                               dir_lba, dir_size, &next_offset,
-                                              ctx->high_sierra, rec, &node);
+                                              ctx->high_sierra, rec, node);
             if (err != ODFS_OK) {
                 odfs_namefix_destroy(&namefix);
+                odfs_free(node);
                 return err;
             }
 
@@ -481,6 +494,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
                 err = odfs_cache_read(cache, sector_lba, &sector);
                 if (err != ODFS_OK) {
                     odfs_namefix_destroy(&namefix);
+                    odfs_free(node);
                     return err;
                 }
                 rec = sector + sector_off;
@@ -491,28 +505,39 @@ static odfs_err_t iso_readdir(void *backend_ctx,
 #if ODFS_FEATURE_ROCK_RIDGE
         /* apply Rock Ridge overrides */
         if (ctx->has_rock_ridge && sua && sua_len > 0) {
-            rr_info_t rr;
-            rr_parse(sua, sua_len, ctx->rr_skip, &rr, cache);
+            /* rr_info_t is ~1.1 KB (two 512-byte name/target buffers); build it
+             * on the heap, never the small SVR4/AMIX kernel stack. Scoped to
+             * this block, so it needs no bookkeeping on the loop's exits. */
+            rr_info_t *rr = odfs_malloc(sizeof(*rr));
+            if (rr == NULL) {
+                odfs_namefix_destroy(&namefix);
+                odfs_free(node);
+                return ODFS_ERR_NOMEM;
+            }
+            rr_parse(sua, sua_len, ctx->rr_skip, rr, cache);
 
             /* skip relocated entries (RE) */
-            if (rr.is_relocated) {
+            if (rr->is_relocated) {
+                odfs_free(rr);
                 offset = next_offset;
                 continue;
             }
-            iso_apply_rr(&node, &rr, ctx->session_start, 1);
+            iso_apply_rr(node, rr, ctx->session_start, 1);
+            odfs_free(rr);
         }
 #endif
 
         /* skip . and .. entries */
-        if ((node.name[0] == '.' && node.name[1] == '\0') ||
-            (node.name[0] == '.' && node.name[1] == '.' && node.name[2] == '\0')) {
+        if ((node->name[0] == '.' && node->name[1] == '\0') ||
+            (node->name[0] == '.' && node->name[1] == '.' && node->name[2] == '\0')) {
             offset = next_offset;
             continue;
         }
 
-        err = odfs_namefix_apply(&namefix, node.name, sizeof(node.name));
+        err = odfs_namefix_apply(&namefix, node->name, sizeof(node->name));
         if (err != ODFS_OK) {
             odfs_namefix_destroy(&namefix);
+            odfs_free(node);
             return err;
         }
 
@@ -523,12 +548,13 @@ static odfs_err_t iso_readdir(void *backend_ctx,
         if (entry_start < target_offset)
             continue;
 
-        err = callback(&node, cb_ctx);
+        err = callback(node, cb_ctx);
         if (err != ODFS_OK) {
             /* callback stopped iteration — save resume point */
             if (resume_offset)
                 *resume_offset = offset;
             odfs_namefix_destroy(&namefix);
+            odfs_free(node);
             return err;
         }
     }
@@ -536,6 +562,7 @@ static odfs_err_t iso_readdir(void *backend_ctx,
     if (resume_offset)
         *resume_offset = dir_size; /* exhausted */
     odfs_namefix_destroy(&namefix);
+    odfs_free(node);
     return ODFS_OK;
 }
 
@@ -645,11 +672,26 @@ static odfs_err_t iso_readlink(void *backend_ctx,
     uint32_t dir_lba = dir->extent.lba;
     uint32_t dir_size = dir->extent.length;
     uint32_t offset = 0;
+    odfs_node_t *node;
+    rr_info_t *rr;
+    odfs_err_t ret;
 
     (void)log;
 
     if (!ctx->has_rock_ridge)
         return ODFS_ERR_UNSUPPORTED;
+
+    /* node (~660 B) and rr_info_t (~1.1 KB) are heap scratch, not stack locals:
+     * together they would overrun the small SVR4/AMIX kernel stack. The 'done'
+     * label frees both on every exit. */
+    node = odfs_malloc(sizeof(*node));
+    rr = odfs_malloc(sizeof(*rr));
+    if (node == NULL || rr == NULL) {
+        odfs_free(node);
+        odfs_free(rr);
+        return ODFS_ERR_NOMEM;
+    }
+    ret = ODFS_ERR_NOT_FOUND;
 
     while (offset < dir_size) {
         uint32_t sector_lba = dir_lba + (offset / ISO_SECTOR_SIZE);
@@ -658,16 +700,16 @@ static odfs_err_t iso_readlink(void *backend_ctx,
         odfs_err_t err;
         const uint8_t *rec;
         size_t avail;
-        odfs_node_t node;
         const uint8_t *sua;
         size_t sua_len;
         int consumed;
-        rr_info_t rr;
         size_t tlen;
 
         err = odfs_cache_read(cache, sector_lba, &sector);
-        if (err != ODFS_OK)
-            return err;
+        if (err != ODFS_OK) {
+            ret = err;
+            goto done;
+        }
 
         rec = sector + sector_off;
         avail = ISO_SECTOR_SIZE - sector_off;
@@ -683,42 +725,50 @@ static odfs_err_t iso_readlink(void *backend_ctx,
                                         &ctx->next_node_id,
                                         ctx->lowercase,
                                         ctx->high_sierra,
-                                        &node, &sua, &sua_len);
+                                        node, &sua, &sua_len);
         if (consumed == 0) {
             offset = ((offset / ISO_SECTOR_SIZE) + 1) * ISO_SECTOR_SIZE;
             continue;
         }
         offset += (uint32_t)consumed;
 
-        memset(&rr, 0, sizeof(rr));
+        memset(rr, 0, sizeof(*rr));
         if (sua && sua_len > 0) {
-            rr_parse(sua, sua_len, ctx->rr_skip, &rr, cache);
-            if (rr.is_relocated)
+            rr_parse(sua, sua_len, ctx->rr_skip, rr, cache);
+            if (rr->is_relocated)
                 continue;
-            if (rr.has_name && rr.name[0] != '\0') {
-                size_t nlen = strlen(rr.name);
-                if (nlen >= sizeof(node.name))
-                    nlen = sizeof(node.name) - 1;
-                memcpy(node.name, rr.name, nlen);
-                node.name[nlen] = '\0';
+            if (rr->has_name && rr->name[0] != '\0') {
+                size_t nlen = strlen(rr->name);
+                if (nlen >= sizeof(node->name))
+                    nlen = sizeof(node->name) - 1;
+                memcpy(node->name, rr->name, nlen);
+                node->name[nlen] = '\0';
             }
         }
 
-        if (odfs_strcasecmp(node.name, name) != 0)
+        if (odfs_strcasecmp(node->name, name) != 0)
             continue;
 
         /* found the object, but it carries no link target */
-        if (!rr.is_symlink || rr.symlink_target[0] == '\0')
-            return ODFS_ERR_UNSUPPORTED;
+        if (!rr->is_symlink || rr->symlink_target[0] == '\0') {
+            ret = ODFS_ERR_UNSUPPORTED;
+            goto done;
+        }
 
-        tlen = strlen(rr.symlink_target);
-        if (tlen >= buf_size)
-            return ODFS_ERR_NAME_TOO_LONG;
-        memcpy(buf, rr.symlink_target, tlen + 1);
-        return ODFS_OK;
+        tlen = strlen(rr->symlink_target);
+        if (tlen >= buf_size) {
+            ret = ODFS_ERR_NAME_TOO_LONG;
+            goto done;
+        }
+        memcpy(buf, rr->symlink_target, tlen + 1);
+        ret = ODFS_OK;
+        goto done;
     }
 
-    return ODFS_ERR_NOT_FOUND;
+done:
+    odfs_free(node);
+    odfs_free(rr);
+    return ret;
 }
 #endif /* ODFS_FEATURE_ROCK_RIDGE */
 
@@ -938,18 +988,18 @@ odfs_err_t odfs_iso_merge_multi_extent(odfs_cache_t *cache,
     return ODFS_OK;
 }
 
-/* synthesize the minimal node needed to enumerate a directory extent */
-odfs_node_t odfs_iso_dir_stub(odfs_backend_type_t backend,
-                              uint32_t lba, uint32_t size)
+/* synthesize the minimal node needed to enumerate a directory extent.
+ * Writes into *out so the caller keeps the node off the stack (a by-value
+ * return would materialize a ~660 B stack temporary at every call site). */
+void odfs_iso_dir_stub(odfs_node_t *out, odfs_backend_type_t backend,
+                       uint32_t lba, uint32_t size)
 {
-    odfs_node_t n;
-    memset(&n, 0, sizeof(n));
-    n.backend       = backend;
-    n.kind          = ODFS_NODE_DIR;
-    n.extent.lba    = lba;
-    n.extent.length = size;
-    n.size          = size;
-    return n;
+    memset(out, 0, sizeof(*out));
+    out->backend       = backend;
+    out->kind          = ODFS_NODE_DIR;
+    out->extent.lba    = lba;
+    out->extent.length = size;
+    out->size          = size;
 }
 
 static odfs_err_t iso_resolve_parent(void *backend_ctx,
@@ -964,8 +1014,9 @@ static odfs_err_t iso_resolve_parent(void *backend_ctx,
     uint32_t root_lba = ctx->pvd.root_dir_lba;
     uint32_t parent_lba, parent_size;
     uint32_t gp_lba, gp_size;
-    odfs_node_t grandparent;
+    odfs_node_t *grandparent;
     odfs_err_t err;
+    odfs_err_t ret;
 
     if (dir->kind != ODFS_NODE_DIR)
         return ODFS_ERR_NOT_DIR;
@@ -997,46 +1048,73 @@ static odfs_err_t iso_resolve_parent(void *backend_ctx,
     if (err != ODFS_OK)
         return err;
 
-    /* enumerate the grandparent to obtain a fully-populated parent node */
+    /* enumerate the grandparent to obtain a fully-populated parent node.
+     * grandparent (and 'great' below) are ~660 B nodes — heap, not stack, to
+     * spare the small SVR4/AMIX kernel stack on the ".." resolution path. The
+     * 'gp_done' label frees grandparent on every exit from here on. */
+    grandparent = odfs_calloc(1, sizeof(*grandparent));
+    if (grandparent == NULL)
+        return ODFS_ERR_NOMEM;
+
     if (gp_lba == root_lba)
-        grandparent = ctx->root;
+        *grandparent = ctx->root;
     else
-        grandparent = odfs_iso_dir_stub(dir->backend, gp_lba, gp_size);
+        odfs_iso_dir_stub(grandparent, dir->backend, gp_lba, gp_size);
 
-    err = iso_find_child_by_lba(backend_ctx, cache, log, &grandparent,
+    err = iso_find_child_by_lba(backend_ctx, cache, log, grandparent,
                                 parent_lba, parent_out);
-    if (err != ODFS_OK)
-        return err;
+    if (err != ODFS_OK) {
+        ret = err;
+        goto gp_done;
+    }
 
-    if (!grandparent_out)
-        return ODFS_OK;
+    if (!grandparent_out) {
+        ret = ODFS_OK;
+        goto gp_done;
+    }
 
     if (gp_lba == root_lba) {
         *grandparent_out = ctx->root;
-        return ODFS_OK;
+        ret = ODFS_OK;
+        goto gp_done;
     }
 
     /* grandparent's ".." → great-grandparent, to populate the grandparent */
     {
         uint32_t ggp_lba, ggp_size;
-        odfs_node_t great;
+        odfs_node_t *great;
 
         err = odfs_iso_read_parent_extent(cache, ss, gp_lba, &ggp_lba, &ggp_size);
-        if (err != ODFS_OK)
-            return err;
+        if (err != ODFS_OK) {
+            ret = err;
+            goto gp_done;
+        }
+
+        great = odfs_calloc(1, sizeof(*great));
+        if (great == NULL) {
+            ret = ODFS_ERR_NOMEM;
+            goto gp_done;
+        }
 
         if (ggp_lba == root_lba)
-            great = ctx->root;
+            *great = ctx->root;
         else
-            great = odfs_iso_dir_stub(dir->backend, ggp_lba, ggp_size);
+            odfs_iso_dir_stub(great, dir->backend, ggp_lba, ggp_size);
 
-        err = iso_find_child_by_lba(backend_ctx, cache, log, &great,
+        err = iso_find_child_by_lba(backend_ctx, cache, log, great,
                                     gp_lba, grandparent_out);
-        if (err != ODFS_OK)
-            return err;
+        odfs_free(great);
+        if (err != ODFS_OK) {
+            ret = err;
+            goto gp_done;
+        }
     }
 
-    return ODFS_OK;
+    ret = ODFS_OK;
+
+gp_done:
+    odfs_free(grandparent);
+    return ret;
 }
 
 /* ------------------------------------------------------------------ */

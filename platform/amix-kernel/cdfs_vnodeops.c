@@ -29,10 +29,48 @@
 #include <sys/kmem.h>       /* kmem_alloc/kmem_free, KM_SLEEP */
 #include <fs/fs_subr.h>     /* fs_nosys/fs_setfl/fs_frlock/fs_poll/... */
 #include "odfs/ancestry.h"  /* odfs_resolve_parent_node() */
+#include "odfs/alloc.h"     /* odfs_calloc/odfs_free (node scratch off the stack) */
 #include <string.h>         /* strlen, memset, memcpy */
 
 /* On-stack kernel space is scarce; read/dir/link scratch comes from kmem. */
 #define CDFS_RDBUF 8192
+
+/* TEMP DIAGNOSTIC -- remove: record the FIRST post-mount directory read into
+ * cdfs_diag (magic 0x0DF50001). Captures the enumerated dir's extent, the
+ * odfs return code, the callback fire count, and — via a direct media read
+ * that bypasses the block cache — the first 16 raw bytes the media backend
+ * hands back for that dir sector (mirrors r1_bytes). Fills once; d1_set is
+ * written LAST so a savestate reader sees a complete block. */
+static void cdfs_diag_first_dir(int op, odfs_mount_t *mnt,
+                                const odfs_node_t *dir,
+                                odfs_err_t ret, int cbcount)
+{
+    unsigned char *tmp;
+    unsigned int   i;
+
+    if (cdfs_diag.d1_set)
+        return;
+
+    cdfs_diag.d1_op      = op;
+    cdfs_diag.d1_lba     = (int)dir->extent.lba;
+    cdfs_diag.d1_size    = (int)dir->extent.length;
+    cdfs_diag.d1_ret     = (int)ret;
+    cdfs_diag.d1_cbcount = cbcount;
+
+    tmp = (unsigned char *)kmem_alloc((size_t)2048, KM_SLEEP);
+    if (tmp != 0) {
+        odfs_err_t re = odfs_media_read(&mnt->media, dir->extent.lba, 1, tmp);
+        cdfs_diag.d1_rderr = (int)re;
+        for (i = 0; i < 16u; i++)
+            cdfs_diag.d1_bytes[i] = tmp[i];
+        kmem_free((void *)tmp, (size_t)2048);
+    } else {
+        cdfs_diag.d1_rderr = -999;
+    }
+
+    cdfs_diag.d1_set = 1;   /* set LAST */
+}
+/* TEMP DIAGNOSTIC -- remove */
 
 /* ---- simple ops ----------------------------------------------------- */
 
@@ -148,9 +186,14 @@ static int cdfs_lookup(struct vnode *dvp, char *nm, struct vnode **vpp,
 {
     struct cdfsnode *cnp = VTOCDFS(dvp);
     odfs_mount_t    *mnt = &VFSTOCDFS(dvp->v_vfsp)->mnt;
-    odfs_node_t      child;
-    odfs_node_t      parent;
+    odfs_node_t     *scratch;   /* the child (name lookup) or the parent ("..").
+                                 * Heap, not a ~660 B stack local (kernel
+                                 * ODFS_NAME_MAX=512): two of these on the tiny
+                                 * SVR4 kernel stack, nested under the core walk,
+                                 * would overrun it. Allocated lazily so the "."
+                                 * / VROOT ".." fast paths take no allocation. */
     odfs_err_t       oe;
+    int              e;
 
     if (dvp->v_type != VDIR)
         return ENOTDIR;
@@ -169,20 +212,38 @@ static int cdfs_lookup(struct vnode *dvp, char *nm, struct vnode **vpp,
             *vpp = dvp;
             return 0;
         }
-        oe = odfs_resolve_parent_node(mnt, &cnp->node, &parent,
+        scratch = odfs_calloc(1, sizeof(*scratch));
+        if (scratch == 0)
+            return ENOMEM;
+        oe = odfs_resolve_parent_node(mnt, &cnp->node, scratch,
                                       (odfs_node_t *)0);
-        if (oe != ODFS_OK)
+        if (oe != ODFS_OK) {
+            odfs_free(scratch);
             return cdfs_errno(oe);
-        return cdfs_getnode(dvp->v_vfsp, &parent,
-                            (const odfs_node_t *)0, (const char *)0, vpp);
+        }
+        e = cdfs_getnode(dvp->v_vfsp, scratch,
+                         (const odfs_node_t *)0, (const char *)0, vpp);
+        odfs_free(scratch);
+        return e;
     }
 
-    oe = odfs_lookup(mnt, &cnp->node, nm, &child);
-    if (oe != ODFS_OK)
+    scratch = odfs_calloc(1, sizeof(*scratch));
+    if (scratch == 0)
+        return ENOMEM;
+
+    oe = odfs_lookup(mnt, &cnp->node, nm, scratch);
+    /* TEMP DIAGNOSTIC -- remove */
+    cdfs_diag_first_dir(2, mnt, &cnp->node, oe, (oe == ODFS_OK) ? 1 : 0);
+    /* TEMP DIAGNOSTIC -- remove */
+    if (oe != ODFS_OK) {
+        odfs_free(scratch);
         return cdfs_errno(oe);
+    }
 
     /* Pass the parent + name so a symlink child can service readlink. */
-    return cdfs_getnode(dvp->v_vfsp, &child, &cnp->node, nm, vpp);
+    e = cdfs_getnode(dvp->v_vfsp, scratch, &cnp->node, nm, vpp);
+    odfs_free(scratch);
+    return e;
 }
 
 /* ---- readdir -------------------------------------------------------- */
@@ -330,6 +391,9 @@ static int cdfs_readdir(struct vnode *vp, struct uio *uiop, cred_t *cr,
         c.skip = (startidx >= 2u) ? (startidx - 2u) : 0u;
         oe = odfs_readdir(mnt, &cnp->node, cdfs_readdir_cb, &c,
                           (uint32_t *)0);
+        /* TEMP DIAGNOSTIC -- remove */
+        cdfs_diag_first_dir(1, mnt, &cnp->node, oe, (int)c.seen);
+        /* TEMP DIAGNOSTIC -- remove */
         if (c.err != 0)
             e = c.err;
         else if (c.full)
