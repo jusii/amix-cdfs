@@ -165,12 +165,26 @@ struct cdfs_diag_s {
      */
     int           d1_set;       /* 0 until the first dir op fills the block */
     int           d1_op;        /* 1 = cdfs_readdir, 2 = cdfs_lookup */
-    int           d1_lba;       /* dir->extent.lba the op enumerated */
-    int           d1_size;      /* dir->extent.length (dir byte size) */
+    int           d1_lba;       /* dir->extent.lba the op enumerated (cnp->node) */
+    int           d1_size;      /* dir->extent.length (dir byte size, cnp->node) */
     int           d1_ret;       /* odfs_readdir/odfs_lookup return (as int) */
     int           d1_cbcount;   /* readdir: child-callback fires; lookup: found */
-    int           d1_rderr;     /* direct media read of d1_lba: err (as int) */
+    int           d1_rderr;     /* direct media read of d1_lba: err (as int).
+                                 * -2 = SKIPPED (d1_lba==0 or >= scount): a bogus
+                                 * LBA read sleeps forever (no timeout) — a diag
+                                 * must never hang the box. */
     unsigned char d1_bytes[16]; /* first 16 bytes the media backend returns for d1_lba */
+    /*
+     * The root node odfs_mount produced, recorded in cdfs_mount the instant
+     * odfs_mount returns OK — BEFORE any cdfs_getnode `cnp->node = *n` copy or
+     * vnode round-trip. Compare against d1_lba/d1_size (from cnp->node in the
+     * first readdir): equal ⇒ the copy is fine and odfs_mount itself yielded a
+     * bad/garbage root; differ ⇒ the copy/round-trip drops it.
+     */
+    int           m_rootlba;    /* cvfs->mnt.root.extent.lba */
+    int           m_rootlen;    /* cvfs->mnt.root.extent.length */
+    int           m_rootbk;     /* cvfs->mnt.root.backend (5=ROCK_RIDGE) */
+    int           m_rootkind;   /* cvfs->mnt.root.kind (1=DIR) */
 };
 extern struct cdfs_diag_s cdfs_diag;
 /* TEMP DIAGNOSTIC -- remove */

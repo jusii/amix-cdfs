@@ -359,7 +359,14 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
                     size_t sua_len = dot_rec_len - sua_start;
                     int rr_skip = 0;
                     if (rr_detect(sua, sua_len, &rr_skip)) {
-                        rr_info_t rr;
+                        /* rr_info_t is ~1.1 KB — keep it off the small SVR4/AMIX
+                         * kernel stack. odfs_calloc zero-fills via kmem_zalloc,
+                         * so the CL/RE tail fields are guaranteed clear even if a
+                         * large in-place clear were unreliable: a stray
+                         * has_child_link would otherwise make iso_apply_rr
+                         * overwrite the root's extent.lba (child-link relocation)
+                         * and produce a malformed, unreadable root directory. */
+                        rr_info_t *rr = odfs_calloc(1, sizeof(*rr));
 
                         ctx->has_rock_ridge = 1;
                         ctx->rr_skip = rr_skip;
@@ -368,8 +375,11 @@ static odfs_err_t iso_mount(odfs_cache_t *cache,
                                    "Rock Ridge extensions detected (skip=%d)",
                                    rr_skip);
 
-                        rr_parse(sua, sua_len, rr_skip, &rr, cache);
-                        iso_apply_rr(root_out, &rr, ctx->session_start, 0);
+                        if (rr != NULL) {
+                            rr_parse(sua, sua_len, rr_skip, rr, cache);
+                            iso_apply_rr(root_out, rr, ctx->session_start, 0);
+                            odfs_free(rr);
+                        }
                     }
                 }
             }

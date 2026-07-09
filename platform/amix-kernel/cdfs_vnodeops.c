@@ -45,27 +45,40 @@ static void cdfs_diag_first_dir(int op, odfs_mount_t *mnt,
                                 const odfs_node_t *dir,
                                 odfs_err_t ret, int cbcount)
 {
-    unsigned char *tmp;
-    unsigned int   i;
+    uint32_t       lba = dir->extent.lba;
+    uint32_t       scount;
 
     if (cdfs_diag.d1_set)
         return;
 
     cdfs_diag.d1_op      = op;
-    cdfs_diag.d1_lba     = (int)dir->extent.lba;
+    cdfs_diag.d1_lba     = (int)lba;
     cdfs_diag.d1_size    = (int)dir->extent.length;
     cdfs_diag.d1_ret     = (int)ret;
     cdfs_diag.d1_cbcount = cbcount;
 
-    tmp = (unsigned char *)kmem_alloc((size_t)2048, KM_SLEEP);
-    if (tmp != 0) {
-        odfs_err_t re = odfs_media_read(&mnt->media, dir->extent.lba, 1, tmp);
-        cdfs_diag.d1_rderr = (int)re;
-        for (i = 0; i < 16u; i++)
-            cdfs_diag.d1_bytes[i] = tmp[i];
-        kmem_free((void *)tmp, (size_t)2048);
+    /*
+     * SAFETY: a kernel READ(10) of a bogus sector sleeps-until-done with NO
+     * timeout, so reading a garbage LBA would wedge the box. Only issue the
+     * live read for an in-range LBA (1 .. scount-1); otherwise record d1_lba
+     * (still diagnostic) and mark the read skipped. A diagnostic must never
+     * be able to hang the machine.
+     */
+    scount = odfs_media_sector_count(&mnt->media);
+    if (lba != 0 && scount != 0 && lba < scount) {
+        unsigned char *tmp = (unsigned char *)kmem_alloc((size_t)2048, KM_SLEEP);
+        if (tmp != 0) {
+            odfs_err_t   re = odfs_media_read(&mnt->media, lba, 1, tmp);
+            unsigned int i;
+            cdfs_diag.d1_rderr = (int)re;
+            for (i = 0; i < 16u; i++)
+                cdfs_diag.d1_bytes[i] = tmp[i];
+            kmem_free((void *)tmp, (size_t)2048);
+        } else {
+            cdfs_diag.d1_rderr = -999;
+        }
     } else {
-        cdfs_diag.d1_rderr = -999;
+        cdfs_diag.d1_rderr = -2;   /* skipped: LBA out of [1, scount) */
     }
 
     cdfs_diag.d1_set = 1;   /* set LAST */

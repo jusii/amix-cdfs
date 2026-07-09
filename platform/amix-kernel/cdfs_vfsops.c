@@ -153,6 +153,15 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
         return 100 + (int)oe;   /* TEMP DIAGNOSTIC -- remove: was cdfs_errno(oe) */
     }
 
+    /* TEMP DIAGNOSTIC -- remove: the root node odfs_mount produced, captured
+     * BEFORE the cdfs_getnode copy below. Compare with d1_lba/d1_size (cnp->node
+     * in the first readdir) to localize a malformed root to odfs_mount vs copy. */
+    cdfs_diag.m_rootlba  = (int)cvfs->mnt.root.extent.lba;
+    cdfs_diag.m_rootlen  = (int)cvfs->mnt.root.extent.length;
+    cdfs_diag.m_rootbk   = (int)cvfs->mnt.root.backend;
+    cdfs_diag.m_rootkind = (int)cvfs->mnt.root.kind;
+    /* TEMP DIAGNOSTIC -- remove */
+
     /* VFS_INIT clears vfs_flag, so OR the read-only flags AFTER it, and set
      * vfs_data before cdfs_getnode (which reaches it through VFSTOCDFS). */
     VFS_INIT(vfsp, &cdfs_vfsops, (caddr_t)cvfs);
