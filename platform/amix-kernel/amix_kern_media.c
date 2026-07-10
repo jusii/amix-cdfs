@@ -154,11 +154,21 @@ static odfs_err_t amix_kern_submit(amix_kern_ctx_t *ctx,
         req.sc.cdb[i] = (uchar)cdb[i];
     req.sc.intr = amix_kern_intr;
 
-    sdqueue(&req.sc);
-
-    /* Block the SCSI interrupt across the test-and-sleep to avoid a lost
-     * wakeup, mirroring gsioctl (sdspl == spl2; drop with spl0). */
+    /*
+     * Raise to spl2 (mask the IPL2 clock/SCSI interrupt) BEFORE issuing, so
+     * the whole synchronous mailbox transaction is atomic w.r.t. the clock.
+     * The z3660 driver completes disk I/O from a timeout() callout in the
+     * clock ISR, which re-enters sdqueue() (via dd.c's disk-completion
+     * startio) and would nest a second transaction on the single shared HBA
+     * mailbox + bounce window mid-transfer, scrambling in-flight state.
+     * Raising the guard first makes this match dd.c's proven-safe ordering
+     * (ddstrategy: sdspl() before startio()). sleep() drops spl to admit the
+     * completion and restores spl2 on wake, so it also blocks the interrupt
+     * across the test-and-sleep and cannot lose a wakeup (sdspl == spl2; drop
+     * with spl0). Do NOT reorder sdspl() back below sdqueue().
+     */
     sdspl();
+    sdqueue(&req.sc);
     while (!req.done)
         sleep((caddr_t)&req.sc, PRIBIO);
     spl0();
