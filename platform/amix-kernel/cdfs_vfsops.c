@@ -42,12 +42,6 @@ extern int copyinstr(/* char *uaddr, char *kaddr, size_t max, size_t *done */);
 /* fstype index, published by cdfsinit(), stamped into vfs_fstype at mount. */
 int cdfs_fstype = 0;
 
-/* TEMP DIAGNOSTIC -- remove: the global diag struct, defined once here and read
- * out of the running kernel via /dev/kmem. BSS-zero; populated in cdfs_mount and
- * the media backend. Declared in cdfs.h. */
-struct cdfs_diag_s cdfs_diag;
-/* TEMP DIAGNOSTIC -- remove */
-
 /* ---- mount-spec parsing --------------------------------------------- */
 
 /*
@@ -104,21 +98,15 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     int              e;
 
     if (uap == 0 || uap->spec == 0)
-        return 210;   /* TEMP DIAGNOSTIC -- remove: was EINVAL */
+        return EINVAL;
 
     e = copyinstr(uap->spec, specbuf, sizeof(specbuf), &done);
     if (e != 0)
-        return 220;   /* TEMP DIAGNOSTIC -- remove: was e */
+        return e;
     specbuf[sizeof(specbuf) - 1] = '\0';
 
     if (cdfs_parse_spec(specbuf, &card, &unit) != 0)
-        return 211;   /* TEMP DIAGNOSTIC -- remove: was EINVAL */
-
-    /* TEMP DIAGNOSTIC -- remove */
-    cdfs_diag.card    = (int)card;
-    cdfs_diag.unit    = (int)unit;
-    cdfs_diag.reached = 1;
-    /* TEMP DIAGNOSTIC -- remove */
+        return EINVAL;
 
     cvfs = (struct cdfs_vfs *)kmem_zalloc(sizeof(*cvfs), KM_SLEEP);
     if (cvfs == 0)
@@ -127,40 +115,18 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     cvfs->unit = unit;
 
     oe = odfs_kern_media_open_scsi(card, unit, &media);
-    /* TEMP DIAGNOSTIC -- remove */
-    cdfs_diag.mopen_oe = (int)oe;
-    /* TEMP DIAGNOSTIC -- remove */
     if (oe != ODFS_OK) {
         kmem_free((void *)cvfs, sizeof(*cvfs));
-        return 130 + (int)oe;   /* TEMP DIAGNOSTIC -- remove: was cdfs_errno(oe) */
+        return cdfs_errno(oe);
     }
-
-    /* TEMP DIAGNOSTIC -- remove */
-    cdfs_diag.scount  = (int)odfs_media_sector_count(&media);
-    cdfs_diag.reached = 2;
-    /* TEMP DIAGNOSTIC -- remove */
 
     oe = odfs_mount(&media, (const odfs_mount_opts_t *)0,
                     (odfs_log_state_t *)0, &cvfs->mnt);
-    /* TEMP DIAGNOSTIC -- remove */
-    cdfs_diag.mount_oe = (int)oe;
-    cdfs_diag.reached  = 3;
-    cdfs_diag.magic    = 0x0DF50001;   /* set LAST: struct fully populated */
-    /* TEMP DIAGNOSTIC -- remove */
     if (oe != ODFS_OK) {
         odfs_media_close(&media);   /* odfs_mount does not close on failure */
         kmem_free((void *)cvfs, sizeof(*cvfs));
-        return 100 + (int)oe;   /* TEMP DIAGNOSTIC -- remove: was cdfs_errno(oe) */
+        return cdfs_errno(oe);
     }
-
-    /* TEMP DIAGNOSTIC -- remove: the root node odfs_mount produced, captured
-     * BEFORE the cdfs_getnode copy below. Compare with d1_lba/d1_size (cnp->node
-     * in the first readdir) to localize a malformed root to odfs_mount vs copy. */
-    cdfs_diag.m_rootlba  = (int)cvfs->mnt.root.extent.lba;
-    cdfs_diag.m_rootlen  = (int)cvfs->mnt.root.extent.length;
-    cdfs_diag.m_rootbk   = (int)cvfs->mnt.root.backend;
-    cdfs_diag.m_rootkind = (int)cvfs->mnt.root.kind;
-    /* TEMP DIAGNOSTIC -- remove */
 
     /* VFS_INIT clears vfs_flag, so OR the read-only flags AFTER it, and set
      * vfs_data before cdfs_getnode (which reaches it through VFSTOCDFS). */

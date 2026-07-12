@@ -35,71 +35,6 @@
 /* On-stack kernel space is scarce; read/dir/link scratch comes from kmem. */
 #define CDFS_RDBUF 8192
 
-/* TEMP DIAGNOSTIC -- remove: record the FIRST post-mount directory read into
- * cdfs_diag (magic 0x0DF50001). Captures the enumerated dir's extent, the
- * odfs return code, the callback fire count, and — via a direct media read
- * that bypasses the block cache — the first 16 raw bytes the media backend
- * hands back for that dir sector (mirrors r1_bytes). Fills once; d1_set is
- * written LAST so a savestate reader sees a complete block. */
-static void cdfs_diag_first_dir(int op, odfs_mount_t *mnt,
-                                const odfs_node_t *dir,
-                                odfs_err_t ret, int cbcount)
-{
-    uint32_t       lba = dir->extent.lba;
-    uint32_t       scount;
-
-    if (cdfs_diag.d1_set)
-        return;
-
-    cdfs_diag.d1_op      = op;
-    cdfs_diag.d1_lba     = (int)lba;
-    cdfs_diag.d1_size    = (int)dir->extent.length;
-    cdfs_diag.d1_ret     = (int)ret;
-    cdfs_diag.d1_cbcount = cbcount;
-
-    /*
-     * SAFETY: a kernel READ(10) of a bogus sector sleeps-until-done with NO
-     * timeout, so reading a garbage LBA would wedge the box. Only issue the
-     * live read for an in-range LBA (1 .. scount-1); otherwise record d1_lba
-     * (still diagnostic) and mark the read skipped. A diagnostic must never
-     * be able to hang the machine.
-     */
-    scount = odfs_media_sector_count(&mnt->media);
-    if (lba != 0 && scount != 0 && lba < scount) {
-        unsigned char  *tmp;
-        const uint8_t  *csec;
-        odfs_err_t      ce;
-        unsigned int    i;
-
-        /* CACHED read — the same block cache odfs_readdir/odfs_lookup walk. */
-        ce = odfs_cache_read(&mnt->cache, lba, &csec);
-        cdfs_diag.d1c_err = (int)ce;
-        if (ce == ODFS_OK) {
-            cdfs_diag.d1c_ptr = (int)(size_t)csec;   /* buffer ptr: heap or text? */
-            for (i = 0; i < 16u; i++)
-                cdfs_diag.d1c_bytes[i] = csec[i];
-        }
-
-        /* DIRECT read — bypasses the cache, straight from the media backend. */
-        tmp = (unsigned char *)kmem_alloc((size_t)2048, KM_SLEEP);
-        if (tmp != 0) {
-            odfs_err_t re = odfs_media_read(&mnt->media, lba, 1, tmp);
-            cdfs_diag.d1_rderr = (int)re;
-            for (i = 0; i < 16u; i++)
-                cdfs_diag.d1_bytes[i] = tmp[i];
-            kmem_free((void *)tmp, (size_t)2048);
-        } else {
-            cdfs_diag.d1_rderr = -999;
-        }
-    } else {
-        cdfs_diag.d1_rderr = -2;   /* skipped: LBA out of [1, scount) */
-        cdfs_diag.d1c_err  = -2;
-    }
-
-    cdfs_diag.d1_set = 1;   /* set LAST */
-}
-/* TEMP DIAGNOSTIC -- remove */
-
 /* ---- simple ops ----------------------------------------------------- */
 
 /* 1: vop_open(vpp, flag, cr) */
@@ -260,9 +195,6 @@ static int cdfs_lookup(struct vnode *dvp, char *nm, struct vnode **vpp,
         return ENOMEM;
 
     oe = odfs_lookup(mnt, &cnp->node, nm, scratch);
-    /* TEMP DIAGNOSTIC -- remove */
-    cdfs_diag_first_dir(2, mnt, &cnp->node, oe, (oe == ODFS_OK) ? 1 : 0);
-    /* TEMP DIAGNOSTIC -- remove */
     if (oe != ODFS_OK) {
         odfs_free(scratch);
         return cdfs_errno(oe);
@@ -419,9 +351,6 @@ static int cdfs_readdir(struct vnode *vp, struct uio *uiop, cred_t *cr,
         c.skip = (startidx >= 2u) ? (startidx - 2u) : 0u;
         oe = odfs_readdir(mnt, &cnp->node, cdfs_readdir_cb, &c,
                           (uint32_t *)0);
-        /* TEMP DIAGNOSTIC -- remove */
-        cdfs_diag_first_dir(1, mnt, &cnp->node, oe, (int)c.seen);
-        /* TEMP DIAGNOSTIC -- remove */
         if (c.err != 0)
             e = c.err;
         else if (c.full)

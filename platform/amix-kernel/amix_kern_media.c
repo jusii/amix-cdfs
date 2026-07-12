@@ -38,9 +38,6 @@
 #include "odfs/media.h"
 #include "odfs/alloc.h"
 #include "amix_kern_media.h"
-#include "cdfs.h"         /* TEMP DIAGNOSTIC -- remove: cdfs_diag global. Before
-                          * rico.h so its short-name macros can't touch the
-                          * vfs/vnode/api headers cdfs.h drags in. */
 
 /*
  * SVR4 kernel services. Included before the alien short-name macros so the
@@ -67,7 +64,7 @@
  * range so no single sdcom exceeds this.
  *
  * ONE SECTOR (2048). Bench evidence: single-sector reads are correct (the PVD,
- * every mount read, and a direct diag read all return good data), but a
+ * every mount read, and a direct cache-bypassing read all return good data), but a
  * multi-sector request — the block cache's read-ahead issues an 8-sector
  * (16 KB) DMA into one buffer, and file reads stream multiple sectors — comes
  * back as GARBAGE (the returned buffer held kernel text) and then wedges the
@@ -130,6 +127,16 @@ static odfs_err_t amix_kern_submit(amix_kern_ctx_t *ctx,
                                    void *data,
                                    unsigned int nbyte)
 {
+    /*
+     * req.sc (the sdcom the HBA driver operates on) lives on THIS stack frame,
+     * so the request MUST be fully completed before this function returns: the
+     * sleep loop below spins until req.done is set from the completion handler,
+     * keeping the frame — and thus the sdcom — alive for the whole transaction.
+     * The z3660 driver now completes the request synchronously, in this call's
+     * own context. Its earlier design deferred completion to a cross-context
+     * timeout() callout that fired AFTER this frame had returned, dereferencing
+     * the by-then-dead stack sdcom — the T2.P3 metal mount panic.
+     */
     amix_kern_req_t req;
     unsigned int    i;
 
@@ -213,24 +220,6 @@ static odfs_err_t amix_kern_read_sectors(void *ctx, uint32_t lba,
         /* Data length is blocks * 2048 (CD), NOT * 512. */
         err = amix_kern_submit(c, cdb, 10, 1, out,
                                (unsigned int)(chunk * AMIX_KERN_CD_SECTOR_SIZE));
-
-        /* TEMP DIAGNOSTIC -- remove: record the very first data read once into
-         * the global diag struct. `out` still points at the buffer start here
-         * (the loop advances it below). At ISO LBA 16 the sector starts with a
-         * volume-descriptor type byte followed by "CD001" (43 44 30 30 31). */
-        {
-            static int amix_kern_read1_done = 0;
-            if (!amix_kern_read1_done) {
-                int j;
-                amix_kern_read1_done = 1;
-                cdfs_diag.r1_lba   = (int)lba;
-                cdfs_diag.r1_count = (int)count;
-                cdfs_diag.r1_err   = (int)err;
-                for (j = 0; j < 16; j++)
-                    cdfs_diag.r1_bytes[j] = out[j];
-            }
-        }
-        /* TEMP DIAGNOSTIC -- remove */
 
         if (err != ODFS_OK)
             return err;
