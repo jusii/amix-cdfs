@@ -127,6 +127,12 @@ extern int mount();
  * one. Probed directly -- a script planted at /usr/lib/fs/cdfs/umount was never
  * run, and stock /usr/lib/fs/ufs/ ships no umount either.
  *
+ * COROLLARY HAZARD (seen on the bench box): leave NO stray file at
+ * /usr/lib/fs/cdfs/umount -- e.g. that probe script. One was later observed to
+ * make `umount /cdrom` die with "umount: cannot execute
+ * /usr/lib/fs/cdfs/umount" (exit 1) BEFORE any umount(2) call, leaving the CD
+ * mounted. /usr/lib/fs/cdfs/ must contain exactly one file: `mount`.
+ *
  * The whole line is built first and handed to ONE write(2) on an O_APPEND
  * descriptor, so a concurrent mount cannot interleave with it.
  */

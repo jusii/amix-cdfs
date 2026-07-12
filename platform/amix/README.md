@@ -119,6 +119,24 @@ alternative fix for the above — getting the `special` field right is the only
 lever. Once the entry is correct, the generic `umount(1M)` unmounts the CD natively
 and removes the entry itself.
 
+**Hazard, seen on the bench box:** a *stray file* at `/usr/lib/fs/cdfs/umount`
+(the probe script above, left behind) can later surface as
+
+```
+umount: cannot execute /usr/lib/fs/cdfs/umount
+```
+
+with exit 1 and **no `umount(2)` call at all** — the CD stays mounted, and every
+further `mount -F cdfs` used to *stack* another mount on top of the stuck one
+(rc=0; the kernel's own mount routines refuse that with `EBUSY` since the
+anti-stacking guard in `cdfs_mount`, but the stray file still breaks the shell
+path). **`/usr/lib/fs/cdfs/` must contain exactly one file: `mount`.** Remove
+anything else:
+
+```sh
+rm -f /usr/lib/fs/cdfs/umount
+```
+
 ### Exit status
 
 | Status | Meaning |
@@ -158,6 +176,7 @@ compiling. Keep it standalone.
 mkdir -p /usr/lib/fs/cdfs
 cp mount /usr/lib/fs/cdfs/mount
 chmod 755 /usr/lib/fs/cdfs/mount
+rm -f /usr/lib/fs/cdfs/umount   # a stray file here breaks umount(1M) — see above
 
 mkdir -p /cdrom
 mount -F cdfs 0,2 /cdrom        # SCSI card 0, target 2

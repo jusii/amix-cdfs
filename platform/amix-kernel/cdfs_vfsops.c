@@ -39,8 +39,21 @@
  * (no prototype) rather than pulling <sys/systm.h>, whose non-const strcmp/
  * strncpy prototypes clash with the compiler built-ins — the same reason the
  * media backend declares its kernel externs locally.
+ *
+ * suser() is the kernel privilege check (returns nonzero for the superuser).
+ * mount(2) itself performs NO privilege check — disassembled: no suser call
+ * anywhere in it — the kernel delegates that to each filesystem's VFS_MOUNT,
+ * and prmount/fdmount/s5mount/nm_mount all open with it. So must cdfs_mount.
+ *
+ * getudev() hands out unique pseudo device majors in
+ * [max(bdevcnt,cdevcnt), 127] from a static counter, -1 when exhausted. It is
+ * the kernel's own convention for device-less filesystems — see the
+ * synthesized-device-identity block below. (vfs_devsearch() comes prototyped
+ * from <sys/vfs.h>.)
  */
 extern int copyinstr(/* char *uaddr, char *kaddr, size_t max, size_t *done */);
+extern int suser(/* cred_t *cr */);
+extern int getudev(/* void */);
 
 /* fstype index, published by cdfsinit(), stamped into vfs_fstype at mount. */
 int cdfs_fstype = 0;
@@ -91,8 +104,13 @@ static int cdfs_parse_spec(const char *s, unsigned int *card, unsigned int *unit
  * because a real CD never traverses /dev/dsk on stock AMIX. The kernel does not
  * care — it walks vfs_dev and vfs_fsid on EVERY mounted vfs regardless:
  *
- *   vfs_devsearch(dev)  linearly scans rootvfs comparing vfs_dev, and is called
- *                       from umount(2), bdevbsize(), s5mount() and ufs_mount().
+ *   vfs_devsearch(dev)  linearly scans rootvfs comparing the vfs_dev longs
+ *                       (no major-range logic anywhere in it), and is called
+ *                       from umount(2) — for a BLOCK-SPECIAL argument only;
+ *                       a directory argument resolves by VROOT -> v_vfsp and
+ *                       never reads vfs_dev — plus bdevbsize(), and from
+ *                       s5mount()/ufs_mount() as their duplicate-device mount
+ *                       guard (which cdfs_mount now mirrors).
  *   getvfs(fsid)        scans rootvfs comparing vfs_fsid.val[0..1], and is
  *                       called from the NFS fhtovp()/myfhtovp() paths.
  *
@@ -106,23 +124,45 @@ static int cdfs_parse_spec(const char *s, unsigned int *card, unsigned int *unit
  * left holding whatever the recycled heap block last contained. Stock s5mount
  * therefore sets all of them, and so must we.
  *
- * The synthesized dev must be STABLE (the same drive yields the same dev on
- * every mount, so the kernel's bookkeeping is consistent across a mount/unmount
- * cycle) and UNIQUE (distinct drives differ), and it must not alias a real block
- * device. bdevcnt is 32 on this kernel, so a real block device can only ever
- * have a major of 0..31; CDFS_MAJOR is L_MAXMAJ (255), which no bdevsw slot can
- * reach. The 18 available minor bits (L_MAXMIN) carry the (card,unit) pair.
+ * WHERE THE MAJOR COMES FROM — the kernel's own convention for device-less
+ * filesystems, taken from disassembling this exact kernel: prinit() and
+ * fdinit() call getudev(), which hands out a unique major from a static
+ * counter starting at max(bdevcnt,cdevcnt) and capped at 127, and latch
+ * makedevice(udev, 0) into a global (procdev, fddev, fdrdev) ONCE at vsw-init
+ * time; prmount/fdmount then stamp that global into vfs_dev and
+ * vfs_fsid=(dev, fstype) on every mount. cdfsinit() does exactly that below.
+ * The result is deterministic for the whole boot (never recycled kmem
+ * garbage), stable across mount/unmount cycles, and collision-free by
+ * construction: real block majors live below bdevcnt (32) and getudev never
+ * hands the same major out twice.
+ *
+ * proc and fd are single-instance and use minor 0; cdfs is per-drive, so the
+ * 18 minor bits (L_MAXMIN) carry the (card,unit) pair and distinct drives get
+ * distinct devs under the one latched major.
+ *
+ * Fallback: getudev() returns -1 only when majors up to 127 are exhausted
+ * (~96 spare on this kernel — cannot happen). prinit's fallback is major 0
+ * with a CE_WARN; ours is L_MAXMAJ (255), which no bdevsw slot (major < 32)
+ * and no getudev consumer (major <= 127) can ever alias — the exact scheme
+ * this tree already proved on metal, kept as the belt-and-suspenders default
+ * in cdfs_makedev() for the unreachable case that a mount precedes cdfsinit()
+ * (it cannot: mount(2) dispatches through the vsw_vfsops pointer that only
+ * cdfsinit() installs).
  */
-#define CDFS_MAJOR      0xffU           /* L_MAXMAJ — far past bdevcnt (32) */
 #define CDFS_CARD_MASK  0x3ffU          /* 10 minor bits for the card ... */
 #define CDFS_UNIT_MASK  0xffU           /* ... and 8 for the unit = 18 = L_MAXMIN */
+
+/* makedevice(major, 0) — latched once by cdfsinit(), see above. */
+static dev_t cdfs_devbase = (dev_t)0;
 
 static dev_t cdfs_makedev(unsigned int card, unsigned int unit)
 {
     unsigned int m;
 
     m = ((card & CDFS_CARD_MASK) << 8) | (unit & CDFS_UNIT_MASK);
-    return (dev_t)makedevice(CDFS_MAJOR, m);
+    if (cdfs_devbase == (dev_t)0)
+        return (dev_t)makedevice(L_MAXMAJ, m);   /* unreachable; see above */
+    return cdfs_devbase | (dev_t)m;
 }
 
 /* ---- vfs ops (positional, matching <sys/vfs.h> struct vfsops) -------- */
@@ -144,6 +184,47 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
 
     if (uap == 0 || uap->spec == 0)
         return EINVAL;
+
+    /* Privilege: mount(2) checks none (disassembled — no suser call in it);
+     * every filesystem in this kernel opens its VFS_MOUNT with suser. */
+    if (!suser(cr))
+        return EPERM;
+
+    if (mvp->v_type != VDIR)
+        return ENOTDIR;
+
+    /*
+     * THE ANTI-STACKING GUARD — the check that makes umount(2) trustworthy.
+     *
+     * mount(2)'s only own busy test is v_vfsmountedhere on the vnode
+     * lookupname() returned for the mount point. But for a directory that is
+     * ALREADY mounted on, lookupname TRAVERSES into the mounted filesystem
+     * and returns its ROOT vnode — whose v_vfsmountedhere is clear. So
+     * without this guard a second `mount -F cdfs 0,2 /cdrom` does not EBUSY:
+     * it silently mounts ON TOP of the first mount (rc=0), and umount(2) —
+     * which resolves its path the same traversing way — then pops ONE layer
+     * per call, returns 0, and `ls /cdrom` still shows the disc beneath:
+     * "umount succeeded but the CD is still mounted".
+     *
+     * Every other filesystem in this kernel refuses exactly this, verified by
+     * disassembly: prmount and fdmount reject v_count > 1, VROOT, and an
+     * already-mounted instance; s5mount rejects v_count > 1 and VROOT on a
+     * non-remount. A covered directory can never carry VROOT; a traversed-to
+     * mount point always does. The v_count test is meaningful here because
+     * mount(2) has already dnlc_purge_vp()'d the mount point before
+     * dispatching VFS_MOUNT, so the only legitimate hold left is
+     * lookupname's own.
+     *
+     * No remount carve-out is needed (s5mount skips these checks when
+     * remounting): a remount reaches VFS_MOUNT with mvp = the mounted fs's
+     * ROOT vnode, so the VROOT test below refuses it — correctly, since a
+     * fixed read-only filesystem has nothing a remount could change. And
+     * mount(2)'s MS_REMOUNT path requires MS_RDONLY to be CLEAR (disassembled:
+     * remount + MS_RDONLY returns EINVAL up front), so any remount that
+     * somehow passed here would still be refused by the EROFS gate below.
+     */
+    if (mvp->v_count > 1 || (mvp->v_flag & VROOT))
+        return EBUSY;
 
     /*
      * cdfs is read-only, and ONLY MS_RDONLY can keep it that way. vfs_add()
@@ -169,6 +250,16 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
 
     if (cdfs_parse_spec(specbuf, &card, &unit) != 0)
         return EINVAL;
+
+    /*
+     * s5mount's duplicate-device guard, mirrored: the same drive must not be
+     * mountable twice (at a second mount point either). Possible only because
+     * vfs_dev is deterministic — the pre-0fcf308 recycled-garbage dev could
+     * never have supported this check.
+     */
+    dev = cdfs_makedev(card, unit);
+    if (vfs_devsearch(dev) != 0)
+        return EBUSY;
 
     /* TEMP DIAG: guarded (head magic + 0xC5 tail canary), tag "cvfs". */
     cvfs = (struct cdfs_vfs *)cdfs_guard_calloc(1, sizeof(*cvfs), "cvfs");
@@ -204,9 +295,9 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
      *
      * s5mount calls VFS_INIT nowhere. It never writes vfs_op, vfs_next or
      * vfs_nsubmounts (mount(2) owns those), it only ever ORs vfs_flag, and it
-     * sets exactly the fields below. Do the same.
+     * sets exactly the fields below. Do the same. (`dev` was synthesized up at
+     * the duplicate-device guard.)
      */
-    dev = cdfs_makedev(card, unit);
 
     /* Already set by mount(2) from the vfssw row cdfsinit() filled in — it had
      * to be, or we could not have been dispatched through it. Idempotent, and
@@ -396,6 +487,20 @@ static int cdfs_swapvp(struct vfs *vfsp, struct vnode **vpp, char *nm)
 int cdfsinit()
 {
     int i;
+    int udev;
+
+    /*
+     * Latch the synthesized device major, the way prinit()/fdinit() do (they
+     * run in this same boot-time vfssw init walk): one getudev() major for the
+     * life of the boot, minor bits carry (card,unit) per mount. Fallback to
+     * L_MAXMAJ on exhaustion — see the synthesized-device-identity block.
+     */
+    if (cdfs_devbase == (dev_t)0) {
+        udev = getudev();
+        if (udev == -1)
+            udev = (int)L_MAXMAJ;
+        cdfs_devbase = (dev_t)makedevice((unsigned int)udev, 0);
+    }
 
     for (i = 0; i < nfstype; i++) {
         if (vfssw[i].vsw_name != 0 &&
