@@ -26,37 +26,65 @@
  * AMIX in-kernel context: no libc. Allocate through the SVR4 kernel memory
  * allocator (<sys/kmem.h>). The mismatch this arm has to bridge: the core's
  * odfs_free(ptr) is handed no size, but SVR4 kmem_free(cp, size) REQUIRES
- * the original length. So odfs_malloc/odfs_calloc over-allocate a header,
- * stash the total (header + payload) length there, and hand back the payload
- * pointer; odfs_free reads the length back for kmem_free. KM_SLEEP: the
- * filesystem runs in process context, so blocking to obtain memory is allowed.
- *
- * TEMP DIAG (THROWAWAY — revert with the whole commit): those three bodies now
- * live in platform/amix-kernel/cdfs_guard.c, which brackets every block with a
- * head magic (in the 4 slack bytes of the header that m68k's 4-byte size_t
- * never used) and an 8-byte 0xC5 tail canary, and verifies both on free. This
- * arm is reduced to a forwarder so the diagnostic can be lifted back out in one
- * revert. Only the AMIX_KERNEL arm changes; the AmigaOS and host arms below are
- * untouched.
+ * the original length. So odfs_malloc/odfs_calloc over-allocate an aligned
+ * size_t header, stash the total (header + payload) length there, and hand
+ * back the payload pointer; odfs_free reads the length back for kmem_free.
+ * KM_SLEEP: the filesystem runs in process context, so blocking to obtain
+ * memory is allowed.
  */
 #include <sys/types.h>   /* size_t + _VOID, needed by <sys/kmem.h> */
 #include <sys/kmem.h>    /* kmem_alloc/kmem_zalloc/kmem_free, KM_SLEEP */
 
-#include "cdfs_guard.h"  /* TEMP DIAG: -I platform/amix-kernel (see Makefile) */
+/*
+ * Header size: one size_t, rounded up to 8-byte alignment so the returned
+ * payload keeps the 8-byte alignment the core's 64-bit fields expect. kmem
+ * hands back at least word-aligned memory, so base + 8 stays 8-aligned.
+ */
+#define ODFS_KMEM_HDR ((size_t)8)
 
 static inline void *odfs_malloc(size_t size)
 {
-    return cdfs_guard_alloc(size, "odfs");
+    char   *base;
+    size_t  total;
+
+    if (size == 0)
+        size = 1;
+    total = size + ODFS_KMEM_HDR;
+    base = (char *)kmem_alloc(total, KM_SLEEP);
+    if (base == 0)
+        return 0;
+    *(size_t *)base = total;
+    return (void *)(base + ODFS_KMEM_HDR);
 }
 
 static inline void *odfs_calloc(size_t count, size_t size)
 {
-    return cdfs_guard_calloc(count, size, "odfs");
+    char   *base;
+    size_t  total;
+
+    if (size != 0 && count > ((size_t)-1) / size)
+        return 0;
+
+    total = count * size;
+    if (total == 0)
+        total = 1;
+    total += ODFS_KMEM_HDR;
+
+    base = (char *)kmem_zalloc(total, KM_SLEEP);
+    if (base == 0)
+        return 0;
+    *(size_t *)base = total;
+    return (void *)(base + ODFS_KMEM_HDR);
 }
 
 static inline void odfs_free(void *ptr)
 {
-    cdfs_guard_free(ptr, "odfs");
+    char *base;
+
+    if (ptr == 0)
+        return;
+    base = (char *)ptr - ODFS_KMEM_HDR;
+    kmem_free((void *)base, *(size_t *)base);
 }
 
 #elif ODFS_PLATFORM_AMIGA
