@@ -92,6 +92,7 @@ struct cdfs_guard_stats {
     unsigned int head_bad;       /* head-magic failures (block leaked)        */
     unsigned int tail_bad;       /* tail-canary failures (block still freed)  */
     unsigned int dfree;          /* head magic was DEAD -> double free        */
+    unsigned int wild_ptr;       /* freed ptr was NEVER a payload (see below) */
     unsigned int leaked;         /* blocks deliberately not freed             */
     unsigned int nomem;          /* kmem_alloc returned 0                     */
     unsigned int dirent_over;    /* cdfs_emit_dirent would have overrun       */
@@ -99,7 +100,8 @@ struct cdfs_guard_stats {
 
     /* First corruption seen, captured once and never overwritten. */
     unsigned int  f_set;         /* 0 until the first corruption is recorded  */
-    unsigned int  f_which;       /* 1 = HEAD, 2 = TAIL, 3 = DOUBLE FREE       */
+    unsigned int  f_which;       /* 1 = HEAD, 2 = TAIL, 3 = DOUBLE FREE,
+                                  * 4 = WILD PTR                              */
     char          f_tag[8];      /* the allocation-site tag                   */
     unsigned int  f_size;        /* payload size (0 when the header is bad)   */
     unsigned int  f_ptr;         /* the payload pointer                       */

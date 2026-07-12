@@ -128,6 +128,37 @@ static int cdfs_guard_verify(const void *ptr, const char *tag,
     unsigned int   magic;
     unsigned int   size;
 
+    /*
+     * Alignment triage FIRST, before touching base-8 at all.  Every pointer
+     * cdfs_guard_alloc can ever have returned is kmem_alloc(total)+8, and on
+     * this kernel every kmem result is at least 16-byte aligned (disassembly
+     * of os/exp kmem_alloc: small pool classes 16..256 and big pool classes
+     * 512..4096 are size-aligned buddies carved from 4096-aligned pool
+     * regions — kmem_allocbpool rounds its 8-page chunk UP to a 4096
+     * boundary; the >4096 path returns whole pages).  A legitimate payload
+     * is therefore ALWAYS == 8 (mod 16).
+     *
+     * So a free arriving with any other alignment is NOT a scribbled header
+     * on a real block: the STORED POINTER ITSELF was overwritten between
+     * allocation and free (the observed soak hit: ptr=0x10302000, == 0 mod
+     * 2048 — the shape of a kmem chunk base, i.e. a freelist-link value,
+     * not of any payload).  Classify it separately: this distinction is the
+     * difference between hunting a buffer overrun and hunting a wild
+     * pointer-sized write into live cache state.  Do not dereference base:
+     * a truly wild value could fault, and the diagnostic must never be the
+     * thing that panics.
+     */
+    if ((((unsigned int)ptr) & 15u) != 8u) {
+        cdfs_guard.wild_ptr++;
+        cdfs_guard_record(4u, tag, 0u, ptr, (const unsigned char *)0);
+
+        cmn_err(CE_NOTE,
+                "cdfs-guard: WILD PTR tag=%s ptr=0x%x n=%d",
+                (char *)tag, (unsigned int)ptr,
+                (int)cdfs_guard.wild_ptr);
+        return -1;
+    }
+
     base  = (unsigned char *)ptr - CDFS_GUARD_HDR;
     total = cdfs_guard_ld32(base);
     magic = cdfs_guard_ld32(base + 4);
@@ -315,10 +346,11 @@ void cdfs_guard_report(void)
             (int)cdfs_guard.live,   (int)cdfs_guard.bytes_live);
 
     cmn_err(CE_NOTE,
-            "cdfs-guard: BAD head=%d tail=%d dfree=%d leak=%d nomem=%d dover=%d dunterm=%d",
+            "cdfs-guard: BAD head=%d tail=%d dfree=%d wild=%d leak=%d nomem=%d dover=%d dunterm=%d",
             (int)cdfs_guard.head_bad, (int)cdfs_guard.tail_bad,
-            (int)cdfs_guard.dfree,    (int)cdfs_guard.leaked,
-            (int)cdfs_guard.nomem,    (int)cdfs_guard.dirent_over,
+            (int)cdfs_guard.dfree,    (int)cdfs_guard.wild_ptr,
+            (int)cdfs_guard.leaked,   (int)cdfs_guard.nomem,
+            (int)cdfs_guard.dirent_over,
             (int)cdfs_guard.dirent_unterm);
 }
 
