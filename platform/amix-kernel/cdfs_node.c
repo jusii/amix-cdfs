@@ -20,6 +20,7 @@
 #if defined(ODFS_PLATFORM_AMIX_KERNEL)
 
 #include "cdfs.h"
+#include "cdfs_guard.h"  /* TEMP DIAG: guarded alloc/free */
 
 #include <sys/kmem.h>    /* kmem_alloc/kmem_zalloc/kmem_free, KM_SLEEP */
 #include <sys/errno.h>   /* ENOMEM, EIO, ... */
@@ -142,8 +143,9 @@ int cdfs_getnode(struct vfs *vfsp, const odfs_node_t *n,
         }
     }
 
-    /* Miss: allocate + initialize a fresh node. */
-    cnp = (struct cdfsnode *)kmem_zalloc(sizeof(*cnp), KM_SLEEP);
+    /* Miss: allocate + initialize a fresh node.
+     * TEMP DIAG: guarded (head magic + 0xC5 tail canary), tag "node". */
+    cnp = (struct cdfsnode *)cdfs_guard_calloc(1, sizeof(*cnp), "node");
     if (cnp == 0)
         return ENOMEM;
 
@@ -156,10 +158,11 @@ int cdfs_getnode(struct vfs *vfsp, const odfs_node_t *n,
     vp->v_data = (caddr_t)cnp;
     vp->v_flag |= VNOMAP;
 
-    /* A symlink needs its parent + entry name for odfs_readlink(). */
+    /* A symlink needs its parent + entry name for odfs_readlink().
+     * TEMP DIAG: guarded, tag "slink". */
     if (n->kind == ODFS_NODE_SYMLINK && parent != 0) {
         cnp->slink = (struct cdfs_symlink *)
-            kmem_zalloc(sizeof(struct cdfs_symlink), KM_SLEEP);
+            cdfs_guard_calloc(1, sizeof(struct cdfs_symlink), "slink");
         if (cnp->slink != 0) {
             cnp->slink->parent = *parent;
             if (name != 0) {
@@ -194,8 +197,8 @@ void cdfs_node_inactive(struct vnode *vp)
     }
 
     if (cnp->slink != 0)
-        kmem_free((void *)cnp->slink, sizeof(struct cdfs_symlink));
-    kmem_free((void *)cnp, sizeof(*cnp));
+        cdfs_guard_free((void *)cnp->slink, "slink");
+    cdfs_guard_free((void *)cnp, "node");
 }
 
 #endif /* ODFS_PLATFORM_AMIX_KERNEL */

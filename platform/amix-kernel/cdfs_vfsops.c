@@ -24,6 +24,7 @@
 
 #include "cdfs.h"
 #include "amix_kern_media.h"   /* odfs_kern_media_open_scsi() */
+#include "cdfs_guard.h"        /* TEMP DIAG: guarded alloc/free + counters */
 
 #include <sys/errno.h>
 #include <sys/statvfs.h>
@@ -169,7 +170,8 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     if (cdfs_parse_spec(specbuf, &card, &unit) != 0)
         return EINVAL;
 
-    cvfs = (struct cdfs_vfs *)kmem_zalloc(sizeof(*cvfs), KM_SLEEP);
+    /* TEMP DIAG: guarded (head magic + 0xC5 tail canary), tag "cvfs". */
+    cvfs = (struct cdfs_vfs *)cdfs_guard_calloc(1, sizeof(*cvfs), "cvfs");
     if (cvfs == 0)
         return ENOMEM;
     cvfs->card = card;
@@ -177,7 +179,7 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
 
     oe = odfs_kern_media_open_scsi(card, unit, &media);
     if (oe != ODFS_OK) {
-        kmem_free((void *)cvfs, sizeof(*cvfs));
+        cdfs_guard_free((void *)cvfs, "cvfs");
         return cdfs_errno(oe);
     }
 
@@ -185,7 +187,7 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
                     (odfs_log_state_t *)0, &cvfs->mnt);
     if (oe != ODFS_OK) {
         odfs_media_close(&media);   /* odfs_mount does not close on failure */
-        kmem_free((void *)cvfs, sizeof(*cvfs));
+        cdfs_guard_free((void *)cvfs, "cvfs");
         return cdfs_errno(oe);
     }
 
@@ -232,7 +234,7 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
                      (const odfs_node_t *)0, (const char *)0, &rvp);
     if (e != 0) {
         odfs_unmount(&cvfs->mnt);
-        kmem_free((void *)cvfs, sizeof(*cvfs));
+        cdfs_guard_free((void *)cvfs, "cvfs");
         return e;
     }
     rvp->v_flag |= VROOT;
@@ -273,7 +275,16 @@ static int cdfs_unmount(struct vfs *vfsp, cred_t *cr)
     if (cvfs->devvp != 0)
         VN_RELE(cvfs->devvp);
 
-    kmem_free((void *)cvfs, sizeof(*cvfs));
+    cdfs_guard_free((void *)cvfs, "cvfs");
+
+    /*
+     * TEMP DIAG: one guard summary per unmount. Everything this mount allocated
+     * has now been freed, so `live` should settle back to its pre-mount value —
+     * a `live` that climbs cycle after cycle across the soak is itself a finding
+     * (a leak), independent of any canary firing.
+     */
+    cdfs_guard_report();
+
     return 0;
 }
 

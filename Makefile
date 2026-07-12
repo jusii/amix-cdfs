@@ -765,7 +765,13 @@ AMIX_KERNEL_BUILD = build/amix-kernel
 # SVR4 kernel exports only bcopy/bzero), and platform/amix/compat supplies the
 # <stdint.h>/<inttypes.h> shims forwarding to include/odfs/compat_stdint.h. The
 # amix-kernel one must come FIRST so its string.h wins over the sysroot's.
+#
+# TEMP DIAG (throwaway): platform/amix-kernel itself is also on the path, so the
+# AMIX_KERNEL arm of the shared include/odfs/alloc.h can reach cdfs_guard.h. It
+# is listed AFTER the two compat dirs so nothing there can shadow the <string.h>
+# / <stdint.h> shims. Drop this -I when the guard commit is reverted.
 AMIX_KERNEL_INCLUDES = -I platform/amix-kernel/compat -I platform/amix/compat \
+                       -I platform/amix-kernel \
                        -I include -I backends
 AMIX_KERNEL_DEFS     = -DODFS_PLATFORM_AMIX_KERNEL -D_KERNEL
 AMIX_KERNEL_CFLAGS   = -O2 $(AMIX_KERNEL_DEFS)
@@ -779,6 +785,7 @@ AMIX_KERNEL_LIB_SRCS = $(CORE_SRCS) \
                        platform/amix-kernel/cdfs_vfsops.c \
                        platform/amix-kernel/cdfs_vnodeops.c \
                        platform/amix-kernel/cdfs_node.c \
+                       platform/amix-kernel/cdfs_guard.c \
                        platform/amix-kernel/kstring.c \
                        platform/amiga/printf_local.c
 AMIX_KERNEL_LIB_OBJS = $(patsubst %.c,$(AMIX_KERNEL_BUILD)/%.o,$(AMIX_KERNEL_LIB_SRCS))

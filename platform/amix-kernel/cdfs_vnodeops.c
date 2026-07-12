@@ -19,6 +19,7 @@
 #if defined(ODFS_PLATFORM_AMIX_KERNEL)
 
 #include "cdfs.h"
+#include "cdfs_guard.h"     /* TEMP DIAG: guarded alloc/free + dirent report */
 
 #include <sys/errno.h>
 #include <sys/uio.h>        /* struct uio, uiomove, UIO_READ */
@@ -72,7 +73,8 @@ static int cdfs_read(struct vnode *vp, struct uio *uiop, int ioflag, cred_t *cr)
     if (uiop->uio_offset < 0)
         return EINVAL;
 
-    buf = (char *)kmem_alloc((size_t)CDFS_RDBUF, KM_SLEEP);
+    /* TEMP DIAG: guarded (head magic + 0xC5 tail canary), tag "rdbuf". */
+    buf = (char *)cdfs_guard_alloc((size_t)CDFS_RDBUF, "rdbuf");
     if (buf == 0)
         return ENOMEM;
 
@@ -96,7 +98,7 @@ static int cdfs_read(struct vnode *vp, struct uio *uiop, int ioflag, cred_t *cr)
             break;
     }
 
-    kmem_free((void *)buf, (size_t)CDFS_RDBUF);
+    cdfs_guard_free((void *)buf, "rdbuf");
     return e;
 }
 
@@ -211,6 +213,7 @@ static int cdfs_lookup(struct vnode *dvp, char *nm, struct vnode **vpp,
 typedef struct cdfs_rd_ctx {
     struct uio *uiop;
     char       *scratch;    /* dirent build buffer */
+    size_t      scratchsz;  /* TEMP DIAG: its size, so emit can bound its writes */
     uint32_t    skip;       /* real children already delivered (to skip) */
     uint32_t    seen;       /* real children visited this call */
     uint32_t    emitted;    /* real children written to the uio this call */
@@ -224,14 +227,61 @@ typedef struct cdfs_rd_ctx {
  * uiomove fault. d_reclen is the fixed header (offsetof d_name) plus the name
  * and its NUL, rounded up to 4 bytes (the ufs DIRSIZ convention; there is no
  * reclen macro in <sys/dirent.h>).
+ *
+ * TEMP DIAG (THROWAWAY — revert with the whole commit) — the latent overrun
+ * this instruments:
+ *
+ * The original computed `namelen = strlen(name)` UNBOUNDED and validated the
+ * resulting reclen ONLY against uio_resid (~8 KiB) — but the memset/memcpy
+ * below write into `scratch`, which is only ~530 bytes (hdr + ODFS_NAME_MAX +
+ * 8). `name` is odfs_node_t.name, a char[ODFS_NAME_MAX]; if a backend ever
+ * hands back a name with no NUL inside that array, strlen walks off the end of
+ * the node struct, namelen comes back arbitrarily large, reclen sails past the
+ * uio_resid check, and memset scribbles multiple KiB across the kernel heap.
+ * That is exactly the shape of the wild write being hunted.
+ *
+ * So: scan the name BOUNDED (never strlen it), take the scratch size as an
+ * argument, and if the record would not fit — or the name is unterminated —
+ * report it loudly and CLAMP instead of writing. If the DIRENT lines ever
+ * appear on the console, the bug is found.
  */
-static int cdfs_emit_dirent(struct uio *uiop, char *scratch,
+static int cdfs_emit_dirent(struct uio *uiop, char *scratch, size_t scratchsz,
                             ino_t d_ino, off_t d_off, const char *name)
 {
     struct dirent *dp = (struct dirent *)scratch;
     size_t         hdr = offsetof(struct dirent, d_name);
-    size_t         namelen = strlen(name);
-    size_t         reclen = (hdr + namelen + 1 + 3) & ~((size_t)3);
+    size_t         namelen;
+    size_t         reclen;
+    size_t         need;
+    size_t         cap;
+    int            unterm = 0;
+
+    /* Bounded scan: never read past the end of odfs_node_t.name[]. */
+    for (namelen = 0; namelen < (size_t)ODFS_NAME_MAX; namelen++) {
+        if (name[namelen] == '\0')
+            break;
+    }
+    if (namelen >= (size_t)ODFS_NAME_MAX)
+        unterm = 1;                       /* no NUL in the whole array */
+
+    need   = hdr + namelen + 1u;          /* bytes this must put in scratch */
+    reclen = (need + 3u) & ~((size_t)3);
+
+    if (unterm || reclen > scratchsz) {
+        cdfs_guard_dirent_bad(unterm, (unsigned int)scratchsz,
+                              (unsigned int)hdr, (unsigned int)namelen,
+                              (unsigned int)need, name);
+
+        /* Clamp the name so every write below stays inside `scratch`. */
+        cap = scratchsz & ~((size_t)3);   /* largest 4-aligned reclen that fits */
+        if (cap < hdr + 4u)
+            return -1;                    /* scratch cannot hold even an empty name */
+        if (namelen > cap - hdr - 1u)
+            namelen = cap - hdr - 1u;
+
+        need   = hdr + namelen + 1u;
+        reclen = (need + 3u) & ~((size_t)3);
+    }
 
     if ((int)reclen > uiop->uio_resid)
         return -1;
@@ -258,7 +308,7 @@ static odfs_err_t cdfs_readdir_cb(const odfs_node_t *entry, void *ctx)
 
     /* Cookie to resume AFTER this child: 2 synthesized entries + (seen+1). */
     d_off = (off_t)(2u + c->seen + 1u);
-    r = cdfs_emit_dirent(c->uiop, c->scratch,
+    r = cdfs_emit_dirent(c->uiop, c->scratch, c->scratchsz,
                          (ino_t)entry->extent.lba, d_off, entry->name);
     if (r == -1) {
         c->full = 1;
@@ -307,7 +357,8 @@ static int cdfs_readdir(struct vnode *vp, struct uio *uiop, cred_t *cr,
         return EINVAL;
 
     scratchsz = offsetof(struct dirent, d_name) + (size_t)ODFS_NAME_MAX + 8u;
-    scratch = (char *)kmem_alloc(scratchsz, KM_SLEEP);
+    /* TEMP DIAG: guarded (head magic + 0xC5 tail canary), tag "scratch". */
+    scratch = (char *)cdfs_guard_alloc(scratchsz, "scratch");
     if (scratch == 0)
         return ENOMEM;
 
@@ -315,6 +366,7 @@ static int cdfs_readdir(struct vnode *vp, struct uio *uiop, cred_t *cr,
 
     c.uiop = uiop;
     c.scratch = scratch;
+    c.scratchsz = scratchsz;
     c.skip = 0;
     c.seen = 0;
     c.emitted = 0;
@@ -329,7 +381,7 @@ static int cdfs_readdir(struct vnode *vp, struct uio *uiop, cred_t *cr,
         const char *dn = (i == 0u) ? "." : "..";
         int         r;
 
-        r = cdfs_emit_dirent(uiop, scratch,
+        r = cdfs_emit_dirent(uiop, scratch, scratchsz,
                              (ino_t)cnp->node.extent.lba,
                              (off_t)(i + 1u), dn);
         if (r == -1) {
@@ -374,7 +426,7 @@ static int cdfs_readdir(struct vnode *vp, struct uio *uiop, cred_t *cr,
         *eofp = 0;
     }
 
-    kmem_free((void *)scratch, scratchsz);
+    cdfs_guard_free((void *)scratch, "scratch");
     return e;
 }
 
@@ -391,23 +443,29 @@ static int cdfs_readlink(struct vnode *vp, struct uio *uiop, cred_t *cr)
     if (vp->v_type != VLNK || cnp->slink == 0)
         return EINVAL;
 
-    buf = (char *)kmem_alloc((size_t)ODFS_NAME_MAX, KM_SLEEP);
+    /* TEMP DIAG: guarded (head magic + 0xC5 tail canary), tag "namebuf". */
+    buf = (char *)cdfs_guard_alloc((size_t)ODFS_NAME_MAX, "namebuf");
     if (buf == 0)
         return ENOMEM;
 
     oe = odfs_readlink(mnt, &cnp->slink->parent, cnp->slink->name,
                        buf, (size_t)ODFS_NAME_MAX);
     if (oe != ODFS_OK) {
-        kmem_free((void *)buf, (size_t)ODFS_NAME_MAX);
+        cdfs_guard_free((void *)buf, "namebuf");
         return cdfs_errno(oe);
     }
 
-    len = strlen(buf);
+    /* Bounded, for the same reason cdfs_emit_dirent no longer strlen()s: a
+     * target that filled buf with no NUL would send strlen off the end. */
+    for (len = 0; len < (size_t)ODFS_NAME_MAX; len++) {
+        if (buf[len] == '\0')
+            break;
+    }
     if ((int)len > uiop->uio_resid)
         len = (size_t)uiop->uio_resid;
     e = uiomove((caddr_t)buf, (int)len, UIO_READ, uiop);
 
-    kmem_free((void *)buf, (size_t)ODFS_NAME_MAX);
+    cdfs_guard_free((void *)buf, "namebuf");
     return e;
 }
 
