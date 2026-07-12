@@ -42,8 +42,8 @@ SCSI host-adapter index, `unit` the target id; `cdfs_mount()` parses it kernel-s
 There is no `/dev` node because a real CD never traverses `/dev/dsk` on stock
 AMIX: `dd.c` hard-codes 512-byte blocks + an RDB, and stock `gsio`'s `iobuf[1024]`
 is smaller than a 2048-byte CD block. Addressing by `(card,unit)` sidesteps that
-entirely. Give the mount point as an **absolute** path — the entry records the
-path as passed, exactly as the stock SVR4 helpers do.
+entirely. Give the mount point as an **absolute** path — it is recorded as passed,
+and (see below) it is also what `umount(1M)` will act on.
 
 ### It writes `/etc/mnttab` — because nothing else will
 
@@ -57,17 +57,67 @@ So on success the helper appends the standard TAB-separated, newline-terminated
 
 ```
 special \t mountp \t fstype \t options \t time
-0,2	/cdrom	cdfs	ro	1783866823
+/cdrom	/cdrom	cdfs	ro	1783866823
 ```
 
 (alongside the box's own `/dev/dsk/c6d0s1  /  ufs  rw,suid  252647335`). fstype is
-`cdfs`, options are always `ro`, and `time` is `time(0)` in decimal seconds. Once
-the entry exists, the **generic `umount(1M)` works natively and removes it** — no
-cdfs-specific umount helper is needed.
+`cdfs`, options are always `ro`, and `time` is `time(0)` in decimal seconds.
 
 If the mnttab append fails, the filesystem **is still mounted**: the helper warns
 on stderr and **exits 0**. Never unmount a working filesystem because bookkeeping
 failed.
+
+### The `special` field is the **mount point** — not the spec
+
+Look again at that line: the special is `/cdrom`, not the `0,2` the CD was mounted
+from. That is deliberate, and it is the single subtlest thing in this file.
+
+**`umount(1M)` unmounts by the mnttab `special` field** — not by the mount point
+you hand it. It looks its argument up in `/etc/mnttab`, matches an entry, and then
+unmounts whatever that entry's *first* field says. So writing cdfs's own spec there
+asks the kernel to unmount `0,2`, which is not a path and cannot be unmounted — and
+`umount(1M)` **still returns 0 and still deletes the entry anyway**.
+
+Measured on the A4000+Z3660, with `0,2	/cdrom	cdfs	ro	<time>` in mnttab and the CD
+accessed (`ls`, `mount`, `df`):
+
+| mnttab `special` | `umount /cdrom` | mnttab entry | filesystem |
+|---|---|---|---|
+| `0,2` (the spec) | rc 0 | **removed** | **STILL MOUNTED** — `ls -la /cdrom` still lists the CD root |
+| `/cdrom` (the mount point) | rc 0 | removed | **really unmounted** |
+
+The spec form is *worse than no entry at all*: a missing entry merely produced a
+"not in mnttab" warning, whereas a wrong one makes the bookkeeping **lie about
+reality** — `mount` shows nothing mounted while the CD is still very much mounted.
+
+Using the mount point as the special is the **established SVR4 convention for
+filesystems with no block device**, and the box's own `/etc/mnttab` sets the
+precedent:
+
+```
+/proc	/proc	proc	rw	...
+/dev/fd	/dev/fd	fd	rw	...
+```
+
+cdfs is in exactly that category — its spec is a `<card>,<unit>` pair, not a `/dev`
+path.
+
+**The cost, stated honestly:** `mount` and `df` now show `/cdrom on /cdrom`, so the
+mnttab entry **no longer records which drive is mounted** — the `0,2` is gone from
+the bookkeeping (`mount(2)` is still given it, and the kernel still knows it). That
+is an accepted trade for an `umount` that actually unmounts. It goes away only if
+cdfs ever grows a real block-device spec; the hook for that, `devvp` in
+`struct cdfs_vfs` ([`platform/amix-kernel/cdfs.h`](../amix-kernel/cdfs.h)), is
+already there but unused.
+
+### There is no cdfs `umount` helper — and none is possible
+
+Unlike `mount(1M)`, **`umount(1M)` does not exec a per-fstype helper.** Probed
+directly: a script planted at `/usr/lib/fs/cdfs/umount` was never executed, and
+stock `/usr/lib/fs/ufs/` ships no `umount` either. So a umount helper is *not* an
+alternative fix for the above — getting the `special` field right is the only
+lever. Once the entry is correct, the generic `umount(1M)` unmounts the CD natively
+and removes the entry itself.
 
 ### Exit status
 
@@ -111,10 +161,13 @@ chmod 755 /usr/lib/fs/cdfs/mount
 
 mkdir -p /cdrom
 mount -F cdfs 0,2 /cdrom        # SCSI card 0, target 2
-mount                           # the CD now appears here …
+mount                           # the CD now appears here — as "/cdrom on /cdrom"
 df                              # … and here
-umount /cdrom                   # … and this removes the mnttab entry
+umount /cdrom                   # … and this really unmounts it, entry and all
 ```
+
+(`mount` reporting `/cdrom on /cdrom` rather than the `0,2` unit is expected — see
+*The `special` field is the mount point* above.)
 
 The `cdfs` row in the kernel's `vfssw[]` is injected separately, by
 `amix-kerntools`' `fstypes.conf` staging.

@@ -21,7 +21,13 @@
  *
  *          special \t mountp \t fstype \t options \t time
  *
- * Once the entry exists, the generic umount(1M) works natively and removes it.
+ *      ...where the `special` we record is the MOUNT POINT, not the spec of
+ *      (1) above. That is not a typo, and not a detail: get it wrong and
+ *      umount(1M) silently fails to unmount. See add_mnttab().
+ *
+ * Once the entry exists, the generic umount(1M) unmounts the CD natively and
+ * removes the entry again. There is no cdfs umount helper -- umount(1M) does
+ * not exec one (see add_mnttab()), and none is needed.
  *
  * If the mnttab append fails the filesystem IS still mounted, so we warn and
  * exit 0. Never unmount a working filesystem because bookkeeping failed.
@@ -69,10 +75,11 @@ extern int mount();
 #endif
 
 /*
- * The mnttab line: 5 TAB-separated fields plus a newline. cdfs_mount() copies
- * in at most 64 bytes of spec and a path is at most PATH_MAX, so this is well
- * clear of the longest line we can emit -- but there is no snprintf() in 1991,
- * so the bound is checked by hand before sprintf() all the same.
+ * The mnttab line: 5 TAB-separated fields plus a newline. The mount point
+ * appears TWICE in it (as the special and as the mountp -- see add_mnttab()),
+ * and a path is at most PATH_MAX, so this is well clear of the longest line we
+ * can emit -- but there is no snprintf() in 1991, so the bound is checked by
+ * hand before sprintf() all the same.
  */
 #define LINEMAX		2048
 #define LINESLACK	64	/* fstype + options + time + tabs + NL */
@@ -80,27 +87,69 @@ extern int mount();
 /*
  * Append this mount to /etc/mnttab. Returns 0, or -1 having warned.
  *
+ * WHY THE `special` FIELD IS THE MOUNT POINT AND NOT THE cdfs SPEC
+ * ----------------------------------------------------------------
+ * umount(1M) looks its argument up in /etc/mnttab and then unmounts BY THE
+ * `special` FIELD of the entry it matched -- not by the mount point it was
+ * handed. So recording cdfs's own spec ("0,2") as the special asks the kernel
+ * to unmount "0,2", which is not a path and cannot be unmounted -- and yet
+ * umount(1M) still reports success and still DELETES the mnttab entry.
+ *
+ * Measured on the box, with `0,2 /cdrom cdfs ro <time>` in mnttab:
+ * `umount /cdrom` -> rc 0, entry gone, filesystem STILL MOUNTED (ls /cdrom went
+ * right on listing the CD's root). That is strictly WORSE than having no entry
+ * at all: a missing entry merely drew a "not in mnttab" warning, whereas a
+ * wrong one makes the bookkeeping lie about reality. Rewriting only that one
+ * field to `/cdrom /cdrom cdfs ro <time>` and repeating the identical sequence
+ * unmounts for real: rc 0, entry removed, filesystem gone.
+ *
+ * Using the mount point as the special is the established SVR4 convention for
+ * filesystems that have no block device, and the box's own /etc/mnttab shows
+ * it:
+ *
+ *     /proc     /proc     proc  rw  ...
+ *     /dev/fd   /dev/fd   fd    rw  ...
+ *
+ * (spaced out here for legibility; the real fields are TAB-separated)
+ *
+ * cdfs is in exactly that category: its spec is a <card>,<unit> pair, not a
+ * /dev path (a real CD never traverses /dev/dsk on stock AMIX).
+ *
+ * The cost, stated plainly: `mount` and `df` now show "/cdrom on /cdrom", so
+ * the mnttab entry no longer records WHICH drive is mounted -- the 0,2 is gone
+ * from the bookkeeping (mount(2) is still given it, and the kernel still knows
+ * it). That is an accepted trade for an umount that actually unmounts. It goes
+ * away only if cdfs ever grows a real block-device spec; the hook for that,
+ * `devvp` in `struct cdfs_vfs` (platform/amix-kernel/cdfs.h), is already there
+ * but unused.
+ *
+ * And a cdfs umount helper is NOT the alternative fix: umount(1M) never execs
+ * one. Probed directly -- a script planted at /usr/lib/fs/cdfs/umount was never
+ * run, and stock /usr/lib/fs/ufs/ ships no umount either.
+ *
  * The whole line is built first and handed to ONE write(2) on an O_APPEND
  * descriptor, so a concurrent mount cannot interleave with it.
  */
 static int
-add_mnttab(spec, dir)
-	char *spec;
+add_mnttab(dir)
 	char *dir;
 {
 	char	line[LINEMAX];
 	int	fd;
 	int	len;
+	int	dirlen;
 	time_t	now;
 
-	if ((int)strlen(spec) + (int)strlen(dir) + LINESLACK > LINEMAX) {
+	/* `dir` lands in the line twice over: as the special AND as the mountp. */
+	dirlen = (int)strlen(dir);
+	if (dirlen * 2 + LINESLACK > LINEMAX) {
 		fprintf(stderr, "cdfs: warning: %s entry too long, not recorded\n",
 			MNTTAB);
 		return (-1);
 	}
 
 	now = time((time_t *)0);
-	sprintf(line, "%s\t%s\t%s\t%s\t%ld\n", spec, dir, FSTYPE, MNTOPTS,
+	sprintf(line, "%s\t%s\t%s\t%s\t%ld\n", dir, dir, FSTYPE, MNTOPTS,
 		(long)now);
 	len = (int)strlen(line);
 
@@ -151,8 +200,13 @@ main(argc, argv)
 	/*
 	 * Mounted. Nothing from here on may fail the command: an mnttab problem
 	 * is a bookkeeping problem, not a mount failure.
+	 *
+	 * `dir` goes in, NOT `spec`: the mnttab special field is what umount(1M)
+	 * unmounts by, so it has to be the mount point. Recording the spec there
+	 * makes umount(1M) drop the entry while leaving the CD mounted. This is
+	 * the subtle one -- add_mnttab() has the full story.
 	 */
-	(void)add_mnttab(spec, dir);
+	(void)add_mnttab(dir);
 
 	exit(0);
 	/*NOTREACHED*/
