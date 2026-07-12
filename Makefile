@@ -296,7 +296,7 @@ AMIGAOS4_README      = docs/ODFileSystem_OS4.readme
 # ==================================================================
 
 .PHONY: all host amiga amiga-test amiga-020 adf rom rom-test lib tests tools fuzz
-.PHONY: amix amix-lib amix-tools
+.PHONY: amix amix-lib amix-tools amix-mount
 .PHONY: check golden-check malformed-check fuzz-check integration-check
 .PHONY: clean size amigaos3-lha amigaos4-lha
 
@@ -666,12 +666,32 @@ AMIX_LIB_OBJS = $(patsubst %.c,$(AMIX_BUILD)/%.o,$(AMIX_LIB_SRCS))
 AMIX_TOOL_NAMES = imginfo imgls imgcat
 AMIX_TOOL_BINS  = $(patsubst %,$(AMIX_BUILD)/tools/%,$(AMIX_TOOL_NAMES))
 
-amix: amix-lib amix-tools
-	@echo "  AMIX build complete: $(AMIX_BUILD)/libodfs.a + $(AMIX_TOOL_NAMES)"
+# The SVR4 userland mount helper, installed on the box as /usr/lib/fs/cdfs/mount
+# (mode 755). SVR4's generic mount(1M) mounts nothing itself — it execs
+# /usr/lib/fs/<fstype>/mount — so without this binary `mount -F cdfs` fails
+# outright and the whole CD stack is unreachable.
+#
+# It is built with NEITHER $(AMIX_INCLUDES) NOR $(AMIX_DEFS): the helper is a
+# bare mount(2) + /etc/mnttab wrapper over system headers alone, depending on
+# nothing in this repo. That is load-bearing rather than incidental — it keeps
+# the on-box recovery build working, where the box's own 1991 K&R cc cannot see
+# this tree at all:
+#
+#     cc -O -o /usr/lib/fs/cdfs/mount mount.c
+#
+# Withholding the -I/-D here is what enforces that mechanically: the moment
+# mount.c grows a dependency on an odfs header, this rule stops compiling.
+AMIX_MOUNT_BIN    = $(AMIX_BUILD)/mount
+AMIX_MOUNT_CFLAGS = -O2
+
+amix: amix-lib amix-tools amix-mount
+	@echo "  AMIX build complete: $(AMIX_BUILD)/libodfs.a + $(AMIX_TOOL_NAMES) + mount"
 
 amix-lib: $(AMIX_BUILD)/libodfs.a
 
 amix-tools: $(AMIX_TOOL_BINS)
+
+amix-mount: $(AMIX_MOUNT_BIN)
 
 $(AMIX_BUILD)/libodfs.a: $(AMIX_LIB_OBJS)
 	@mkdir -p $(@D)
@@ -706,6 +726,13 @@ $(AMIX_BUILD)/tools/imgcat: tools/imgcat/imgcat.c $(AMIX_BUILD)/libodfs.a
 	@mkdir -p $(@D)
 	@echo "  AMIXCC $<"
 	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_INCLUDES) $(AMIX_CFLAGS) -o $@ $< -L$(AMIX_BUILD) -lodfs -lc -lgcc
+
+# Standalone: no -I, no -D, no libodfs (see the AMIX_MOUNT_BIN comment above).
+# With no -l the cross wrapper links libc by itself, which is all this needs.
+$(AMIX_MOUNT_BIN): platform/amix/mount.c
+	@mkdir -p $(@D)
+	@echo "  AMIXCC $<"
+	@$(AMIX_CC) $(CPPFLAGS) $(AMIX_MOUNT_CFLAGS) -o $@ $<
 
 # ==================================================================
 # AMIX (SVR4/m68k) in-kernel build — provider foundation
