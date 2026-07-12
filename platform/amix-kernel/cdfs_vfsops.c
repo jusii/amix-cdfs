@@ -29,6 +29,8 @@
 #include <sys/statvfs.h>
 #include <sys/cred.h>
 #include <sys/kmem.h>          /* kmem_zalloc/kmem_free, KM_SLEEP */
+#include <sys/mount.h>         /* MS_RDONLY — the mount(2) flag bits */
+#include <sys/sysmacros.h>     /* makedevice(), L_MAXMAJ/L_MAXMIN */
 #include <string.h>            /* memset, strncpy */
 
 /*
@@ -81,6 +83,47 @@ static int cdfs_parse_spec(const char *s, unsigned int *card, unsigned int *unit
     return 0;
 }
 
+/* ---- synthesized device identity ------------------------------------ */
+
+/*
+ * cdfs has no block-special device: it addresses the drive by (card,unit),
+ * because a real CD never traverses /dev/dsk on stock AMIX. The kernel does not
+ * care — it walks vfs_dev and vfs_fsid on EVERY mounted vfs regardless:
+ *
+ *   vfs_devsearch(dev)  linearly scans rootvfs comparing vfs_dev, and is called
+ *                       from umount(2), bdevbsize(), s5mount() and ufs_mount().
+ *   getvfs(fsid)        scans rootvfs comparing vfs_fsid.val[0..1], and is
+ *                       called from the NFS fhtovp()/myfhtovp() paths.
+ *
+ * Both hand the matched `struct vfs *` straight to code that casts vfs_data to
+ * ITS OWN private mount struct — so a vfs_dev/vfs_fsid on our vfs that collides
+ * with a real filesystem's is a wild-pointer generator, not a cosmetic defect.
+ *
+ * And they DO arrive as garbage: mount(2) allocates the vfs with kmem_alloc,
+ * not kmem_zalloc, and the VFS_INIT it then runs clears only vfs_next, vfs_op,
+ * vfs_flag, vfs_data and vfs_nsubmounts. vfs_dev, vfs_fsid and vfs_bcount are
+ * left holding whatever the recycled heap block last contained. Stock s5mount
+ * therefore sets all of them, and so must we.
+ *
+ * The synthesized dev must be STABLE (the same drive yields the same dev on
+ * every mount, so the kernel's bookkeeping is consistent across a mount/unmount
+ * cycle) and UNIQUE (distinct drives differ), and it must not alias a real block
+ * device. bdevcnt is 32 on this kernel, so a real block device can only ever
+ * have a major of 0..31; CDFS_MAJOR is L_MAXMAJ (255), which no bdevsw slot can
+ * reach. The 18 available minor bits (L_MAXMIN) carry the (card,unit) pair.
+ */
+#define CDFS_MAJOR      0xffU           /* L_MAXMAJ — far past bdevcnt (32) */
+#define CDFS_CARD_MASK  0x3ffU          /* 10 minor bits for the card ... */
+#define CDFS_UNIT_MASK  0xffU           /* ... and 8 for the unit = 18 = L_MAXMIN */
+
+static dev_t cdfs_makedev(unsigned int card, unsigned int unit)
+{
+    unsigned int m;
+
+    m = ((card & CDFS_CARD_MASK) << 8) | (unit & CDFS_UNIT_MASK);
+    return (dev_t)makedevice(CDFS_MAJOR, m);
+}
+
 /* ---- vfs ops (positional, matching <sys/vfs.h> struct vfsops) -------- */
 
 /* 1: vfs_mount(vfsp, mvp, uap, cr) */
@@ -95,10 +138,28 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     struct vnode    *rvp;
     odfs_media_t     media;
     odfs_err_t       oe;
+    dev_t            dev;
     int              e;
 
     if (uap == 0 || uap->spec == 0)
         return EINVAL;
+
+    /*
+     * cdfs is read-only, and ONLY MS_RDONLY can keep it that way. vfs_add()
+     * runs AFTER this routine returns and rewrites VFS_RDONLY from the mount(2)
+     * flags alone:
+     *
+     *     if (mflag & MS_RDONLY) vfs_flag |=  VFS_RDONLY;
+     *     else                   vfs_flag &= ~VFS_RDONLY;
+     *
+     * so the VFS_RDONLY we set below is CLEARED again for any caller that did
+     * not pass MS_RDONLY — leaving the kernel believing a CD is writable. Our
+     * userland helper (platform/amix/mount.c) always passes it; refuse anybody
+     * who does not, rather than mount read-only media the kernel thinks it may
+     * write to. (vfs_add leaves VFS_NOTRUNC alone, so that one does survive.)
+     */
+    if ((uap->flags & MS_RDONLY) == 0)
+        return EROFS;
 
     e = copyinstr(uap->spec, specbuf, sizeof(specbuf), &done);
     if (e != 0)
@@ -128,12 +189,44 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
         return cdfs_errno(oe);
     }
 
-    /* VFS_INIT clears vfs_flag, so OR the read-only flags AFTER it, and set
-     * vfs_data before cdfs_getnode (which reaches it through VFSTOCDFS). */
-    VFS_INIT(vfsp, &cdfs_vfsops, (caddr_t)cvfs);
-    vfsp->vfs_flag |= VFS_RDONLY | VFS_NOTRUNC;
-    vfsp->vfs_bsize = 2048;
+    /*
+     * Fill in the vfs the way stock s5mount does — and deliberately NOT with
+     * VFS_INIT().
+     *
+     * mount(2) has ALREADY run VFS_INIT on this struct (it is inlined there,
+     * right after the kmem_alloc), and has then called vfs_lock(), which sets
+     * VFS_MLOCK in vfs_flag. VFS_INIT *assigns* `vfs_flag = 0`, so calling it a
+     * second time here destroys that lock bit. Worse, on an MS_REMOUNT mount(2)
+     * hands us the LIVE vfs rather than a fresh one, and VFS_INIT would then
+     * also zero vfs_next — truncating the global rootvfs list.
+     *
+     * s5mount calls VFS_INIT nowhere. It never writes vfs_op, vfs_next or
+     * vfs_nsubmounts (mount(2) owns those), it only ever ORs vfs_flag, and it
+     * sets exactly the fields below. Do the same.
+     */
+    dev = cdfs_makedev(card, unit);
+
+    /* Already set by mount(2) from the vfssw row cdfsinit() filled in — it had
+     * to be, or we could not have been dispatched through it. Idempotent, and
+     * kept explicit so the vector this vfs runs on is stated at the mount. */
+    vfsp->vfs_op     = &cdfs_vfsops;
+
+    /* Before cdfs_getnode(): it reaches cvfs back through VFSTOCDFS(vfsp). */
+    vfsp->vfs_data   = (caddr_t)cvfs;
+
     vfsp->vfs_fstype = cdfs_fstype;
+    vfsp->vfs_bsize  = 2048;
+
+    /* The three mount(2)'s kmem_alloc leaves as recycled garbage. s5mount sets
+     * dev and fsid to (device, fstype) and zeroes the I/O count; ours is the
+     * synthesized (card,unit) device — see cdfs_makedev(). */
+    vfsp->vfs_dev         = dev;
+    vfsp->vfs_fsid.val[0] = (long)dev;
+    vfsp->vfs_fsid.val[1] = (long)cdfs_fstype;
+    vfsp->vfs_bcount      = 0;
+
+    /* OR, never assign: VFS_MLOCK is live in here right now. */
+    vfsp->vfs_flag  |= VFS_RDONLY | VFS_NOTRUNC;
 
     e = cdfs_getnode(vfsp, &cvfs->mnt.root,
                      (const odfs_node_t *)0, (const char *)0, &rvp);
