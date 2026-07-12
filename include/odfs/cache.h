@@ -48,6 +48,9 @@ typedef struct odfs_cache {
     int32_t              lru_tail;    /* least recently used valid entry */
     odfs_cache_stats_t  stats;
     odfs_media_t       *media;       /* underlying media for miss reads */
+    uint8_t            *data_slab;   /* one allocation backing every
+                                        entry's data buffer; NULL when the
+                                        per-entry fallback was used */
     uint8_t            *stream_buf;  /* staging for clustered miss reads;
                                         NULL disables read-ahead */
     uint32_t             last_miss_lba; /* detects sequential miss runs */

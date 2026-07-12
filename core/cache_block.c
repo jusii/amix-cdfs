@@ -224,20 +224,52 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
         return ODFS_ERR_NOMEM;
     }
 
-    /* allocate data buffers for each entry */
-    for (i = 0; i < capacity; i++) {
-        cache->entries[i].data = odfs_malloc(sector_size);
-        if (!cache->entries[i].data) {
-            /* roll back */
-            for (j = 0; j < i; j++)
-                odfs_free(cache->entries[j].data);
-            odfs_free(cache->buckets);
-            odfs_free(cache->next);
-            odfs_free(cache->entries);
-            memset(cache, 0, sizeof(*cache));
-            return ODFS_ERR_NOMEM;
+    /*
+     * Back every entry's sector buffer with ONE slab allocation instead of
+     * `capacity` individual sector-sized allocations.
+     *
+     * Beyond being fewer allocator round trips, this matters on targets
+     * whose allocator recycles freed chunks through size-class freelists
+     * (the AMIX SVR4 kernel): a per-buffer allocation is sector_size plus
+     * the platform allocation header — on AMIX 2048 + 8/16, JUST over the
+     * 2048-byte page — so every mount/unmount cycle churned ~capacity
+     * pathological just-over-a-page chunks through the kernel's buddy
+     * pools, and teardown freed `capacity` pointers loaded from cache
+     * memory (a corrupted entries[i].data slot turns into kmem_free of a
+     * never-allocated pointer, poisoning the allocator for the NEXT
+     * mount — the observed remount corruption).  With the slab there is
+     * exactly one buffer allocation per mount and teardown frees one
+     * pointer owned by this struct, not `capacity` pointers stored in a
+     * reusable array.
+     *
+     * The per-entry path is kept as a fallback for memory-tight targets
+     * (a small Amiga may have no contiguous capacity*sector_size block
+     * even when the individual sectors would fit).
+     */
+    if ((size_t)capacity <= ((size_t)-1) / sector_size) {
+        cache->data_slab = odfs_malloc((size_t)capacity * sector_size);
+    }
+    if (cache->data_slab) {
+        for (i = 0; i < capacity; i++) {
+            cache->entries[i].data =
+                cache->data_slab + (size_t)i * sector_size;
+            cache->entries[i].valid = 0;
         }
-        cache->entries[i].valid = 0;
+    } else {
+        for (i = 0; i < capacity; i++) {
+            cache->entries[i].data = odfs_malloc(sector_size);
+            if (!cache->entries[i].data) {
+                /* roll back */
+                for (j = 0; j < i; j++)
+                    odfs_free(cache->entries[j].data);
+                odfs_free(cache->buckets);
+                odfs_free(cache->next);
+                odfs_free(cache->entries);
+                memset(cache, 0, sizeof(*cache));
+                return ODFS_ERR_NOMEM;
+            }
+            cache->entries[i].valid = 0;
+        }
     }
 
     cache->capacity = capacity;
@@ -276,8 +308,14 @@ void odfs_cache_destroy(odfs_cache_t *cache)
     if (!cache || !cache->entries)
         return;
 
-    for (i = 0; i < cache->capacity; i++)
-        odfs_free(cache->entries[i].data);
+    /* Slab mode frees the one slab this struct owns; only the fallback
+     * mode trusts (and frees) the per-entry data pointers. */
+    if (cache->data_slab) {
+        odfs_free(cache->data_slab);
+    } else {
+        for (i = 0; i < cache->capacity; i++)
+            odfs_free(cache->entries[i].data);
+    }
     odfs_free(cache->stream_buf);
     odfs_free(cache->buckets);
     odfs_free(cache->next);
