@@ -50,6 +50,8 @@
  */
 #include <sys/types.h>   /* caddr_t, paddr_t, uint (typedef) */
 #include <sys/param.h>   /* PRIBIO                           */
+#include <sys/immu.h>    /* NBPP (2048) — the DMA page-cross invariant */
+#include <sys/cmn_err.h> /* cmn_err, CE_WARN                 */
 #include <sys/inline.h>  /* _spl0/_spl2 inlines + spl0/spl2 macros   */
 
 /* Kernel SCSI transport ABI — LAST: rico.h's bool/uint/uchar macros. */
@@ -90,6 +92,11 @@ extern void    sdqueue(/* struct sdcom * */);  /* scsi.c: enqueue a request  */
 extern paddr_t vtop(/* caddr_t, struct proc * */); /* VA -> bus address      */
 extern int     sleep(/* caddr_t, int */);      /* block on a channel         */
 extern void    wakeup(/* caddr_t */);          /* wake sleepers on a channel */
+extern char   *memcpy(/* void *, const void *, size_t */); /* kernel ml/exp;
+                * K&R like the rest — this TU sees the sysroot <string.h>
+                * (its scoped include path has no compat interceptor), whose
+                * prototype clashes with <sys/inline.h>'s strlen, so it is
+                * not included here */
 
 typedef struct amix_kern_ctx {
     unsigned int card;
@@ -145,6 +152,29 @@ static odfs_err_t amix_kern_submit(amix_kern_ctx_t *ctx,
     if (cdb_len > sizeof(req.sc.cdb))
         return ODFS_ERR_INVAL;
 
+    /*
+     * DMA-contract invariant: the transfer must not cross a page boundary.
+     *
+     * sc.addr is a PHYSICAL address (vtop of `data`) and the HBA transfers
+     * sc.nbyte bytes LINEARLY through physical memory from it. vtop()
+     * translates exactly one page; SVR4 kmem/sptalloc memory is virtually
+     * contiguous but PHYSICALLY SCATTERED (segkmem_alloc maps arbitrary
+     * page_get frames), so any transfer that runs past the end of `data`'s
+     * page writes into an UNRELATED physical page — a wild write into
+     * whatever happens to own the physically-next frame (this exact bug
+     * zeroed the head of cached binaries on the metal box). Translation
+     * preserves the in-page offset, so checking the virtual offset is
+     * equivalent to checking the physical one. Refuse loudly rather than
+     * fire a wild DMA; every internal caller guarantees an in-page target
+     * (page-aligned sector buffers, or the bounce in read_sectors).
+     */
+    if (((unsigned long)data & (NBPP - 1)) + nbyte > (unsigned long)NBPP) {
+        cmn_err(CE_WARN,
+                "cdfs: refused DMA crossing a page: addr 0x%x nbyte %d",
+                (unsigned int)(unsigned long)data, (int)nbyte);
+        return ODFS_ERR_INVAL;
+    }
+
     /* Zero the whole sdcom, exactly as gsioctl does (no partial init). */
     for (i = 0; i < (unsigned int)sizeof(req.sc); i++)
         ((char *)&req.sc)[i] = 0;
@@ -193,7 +223,9 @@ static odfs_err_t amix_kern_read_sectors(void *ctx, uint32_t lba,
 {
     amix_kern_ctx_t *c = (amix_kern_ctx_t *)ctx;
     unsigned char   *out = (unsigned char *)buf;
+    unsigned char   *bounce = 0;
     uint32_t         max_blocks = AMIX_KERN_MAX_XFER / AMIX_KERN_CD_SECTOR_SIZE;
+    odfs_err_t       err = ODFS_OK;
 
     if (c == 0)
         return ODFS_ERR_IO;
@@ -201,9 +233,34 @@ static odfs_err_t amix_kern_read_sectors(void *ctx, uint32_t lba,
         return ODFS_OK;
 
     while (count != 0) {
-        uint32_t      chunk = (count < max_blocks) ? count : max_blocks;
-        unsigned char cdb[10];
-        odfs_err_t    err;
+        uint32_t       chunk = (count < max_blocks) ? count : max_blocks;
+        unsigned int   nbyte = (unsigned int)(chunk * AMIX_KERN_CD_SECTOR_SIZE);
+        unsigned char *dst = out;
+        unsigned char  cdb[10];
+
+        /*
+         * Page-aligned targets (the core's sector-aligned cache buffers,
+         * and page-aligned callers like cdfs_read's RDBUF on sector-aligned
+         * file offsets) DMA directly: one 2048-byte sector into exactly one
+         * 2048-byte page. An UNALIGNED target (a caller streaming full
+         * sectors into the middle of its own buffer — e.g. cdfs_read at a
+         * non-sector-aligned uio_offset) would make the linear physical
+         * transfer cross a page into an unrelated frame, so it goes through
+         * a page-aligned bounce sector and a memcpy instead. Allocated
+         * per call (lazily, first unaligned chunk), NOT shared per mount:
+         * the submit sleep is a reschedule point and concurrent readers
+         * of one mount must not share a bounce.
+         */
+        if (((unsigned long)out & (NBPP - 1)) != 0) {
+            if (bounce == 0) {
+                bounce = (unsigned char *)
+                    odfs_malloc_aligned((size_t)AMIX_KERN_MAX_XFER,
+                                        (size_t)NBPP);
+                if (bounce == 0)
+                    return ODFS_ERR_NOMEM;
+            }
+            dst = bounce;
+        }
 
         /* READ(10): opcode, LBA in cdb[2..5], block count in cdb[7..8]. */
         cdb[0] = 0x28;
@@ -218,18 +275,21 @@ static odfs_err_t amix_kern_read_sectors(void *ctx, uint32_t lba,
         cdb[9] = 0;
 
         /* Data length is blocks * 2048 (CD), NOT * 512. */
-        err = amix_kern_submit(c, cdb, 10, 1, out,
-                               (unsigned int)(chunk * AMIX_KERN_CD_SECTOR_SIZE));
-
+        err = amix_kern_submit(c, cdb, 10, 1, dst, nbyte);
         if (err != ODFS_OK)
-            return err;
+            break;
 
-        out   += chunk * AMIX_KERN_CD_SECTOR_SIZE;
+        if (dst == bounce)
+            memcpy(out, bounce, (size_t)nbyte);
+
+        out   += nbyte;
         lba   += chunk;
         count -= chunk;
     }
 
-    return ODFS_OK;
+    if (bounce)
+        odfs_free_aligned(bounce);
+    return err;
 }
 
 static uint32_t amix_kern_sector_size(void *ctx)
@@ -272,51 +332,70 @@ static uint32_t amix_kern_be32(const unsigned char *p)
          | ((uint32_t)p[2] <<  8) | ((uint32_t)p[3]);
 }
 
+/*
+ * The probe responses (INQUIRY 36 bytes, READ CAPACITY 8 bytes) are DMA
+ * targets too, so they must satisfy the same page-cross invariant as the
+ * sector reads. A stack buffer sits at an arbitrary in-page offset and can
+ * straddle a page boundary — and DMAing into the kernel stack is fragile
+ * anyway — so each probe allocates a page-aligned scratch page instead
+ * (mount-time only; the cost is irrelevant).
+ */
+
 /* INQUIRY (0x12): confirm this really is a CD-ROM (peripheral type 0x05). */
 static odfs_err_t amix_kern_check_inquiry(amix_kern_ctx_t *c)
 {
-    unsigned char cdb[6];
-    unsigned char data[36];
-    odfs_err_t    err;
+    unsigned char  cdb[6];
+    unsigned char *data;
+    odfs_err_t     err;
+
+    data = (unsigned char *)odfs_malloc_aligned((size_t)NBPP, (size_t)NBPP);
+    if (data == 0)
+        return ODFS_ERR_NOMEM;
 
     cdb[0] = 0x12;   /* INQUIRY            */
     cdb[1] = 0;      /* EVPD = 0           */
     cdb[2] = 0;      /* page code          */
     cdb[3] = 0;
-    cdb[4] = (unsigned char)sizeof(data);  /* allocation length (36) */
+    cdb[4] = 36;     /* allocation length  */
     cdb[5] = 0;      /* control            */
 
-    err = amix_kern_submit(c, cdb, 6, 1, data, (unsigned int)sizeof(data));
-    if (err != ODFS_OK)
-        return err;
+    err = amix_kern_submit(c, cdb, 6, 1, data, 36u);
 
     /* Peripheral device type is the low 5 bits of byte 0. 0x05 = CD-ROM. */
-    if ((data[0] & 0x1f) != 0x05)
-        return ODFS_ERR_UNSUPPORTED;
+    if (err == ODFS_OK && (data[0] & 0x1f) != 0x05)
+        err = ODFS_ERR_UNSUPPORTED;
 
-    return ODFS_OK;
+    odfs_free_aligned(data);
+    return err;
 }
 
 /* READ CAPACITY(10) (0x25): last LBA + block length; require 2048-byte blocks. */
 static odfs_err_t amix_kern_read_capacity(amix_kern_ctx_t *c)
 {
-    unsigned char cdb[10];
-    unsigned char data[8];
-    uint32_t      last_lba;
-    uint32_t      block_len;
-    odfs_err_t    err;
-    unsigned int  i;
+    unsigned char  cdb[10];
+    unsigned char *data;
+    uint32_t       last_lba;
+    uint32_t       block_len;
+    odfs_err_t     err;
+    unsigned int   i;
+
+    data = (unsigned char *)odfs_malloc_aligned((size_t)NBPP, (size_t)NBPP);
+    if (data == 0)
+        return ODFS_ERR_NOMEM;
 
     for (i = 0; i < (unsigned int)sizeof(cdb); i++)
         cdb[i] = 0;
     cdb[0] = 0x25;   /* READ CAPACITY(10); LBA 0, PMI 0 */
 
-    err = amix_kern_submit(c, cdb, 10, 1, data, (unsigned int)sizeof(data));
-    if (err != ODFS_OK)
+    err = amix_kern_submit(c, cdb, 10, 1, data, 8u);
+    if (err != ODFS_OK) {
+        odfs_free_aligned(data);
         return err;
+    }
 
     last_lba  = amix_kern_be32(&data[0]);
     block_len = amix_kern_be32(&data[4]);
+    odfs_free_aligned(data);
 
     /* 0xFFFFFFFF means the capacity overflows READ CAPACITY(10). */
     if (last_lba == 0xFFFFFFFFu)
