@@ -158,4 +158,55 @@ static inline void odfs_free(void *ptr)
 
 #endif
 
+/*
+ * Aligned allocation for buffers a media backend hands to hardware.
+ *
+ * Sector buffers (the block cache's slab, its per-entry fallback, the
+ * read-ahead staging buffer, the multi-session PVD scan buffer) are DMA
+ * TARGETS on real-hardware targets: the Amiga handler's exec devices and the
+ * AMIX in-kernel SCSI backend both point a bus-master engine at them. Plain
+ * odfs_malloc gives no useful alignment — on the AMIX kernel arm it returns
+ * kmem payloads 8 bytes past a page boundary, so a sector-sized transfer
+ * CROSSES the page boundary, and because large SVR4 kmem allocations are
+ * virtually contiguous but PHYSICALLY SCATTERED (sptalloc/segkmem map
+ * arbitrary page_get frames), the tail of the transfer lands in an unrelated
+ * physical page — a wild write into whatever the frame allocator's neighbour
+ * happens to be. Aligning every sector buffer to the sector size (== the AMIX
+ * page size, 2048) makes each sector occupy exactly one page, so a bounded
+ * transfer can never leave its own frame.
+ *
+ * Generic over odfs_malloc/odfs_free: over-allocate by align + one pointer,
+ * round the payload up to `align`, and stash the raw pointer immediately
+ * below the payload for odfs_free_aligned. `align` must be a power of two.
+ * (Pointer<->size_t round-tripping is exact on every supported target:
+ * flat 32-bit m68k and 64-bit hosts where size_t matches the pointer width.)
+ */
+static inline void *odfs_malloc_aligned(size_t size, size_t align)
+{
+    char   *raw;
+    char   *payload;
+    size_t  addr;
+
+    if (align == 0 || (align & (align - 1)) != 0)
+        return 0;
+    if (size > ((size_t)-1) - align - sizeof(void *))
+        return 0;
+
+    raw = (char *)odfs_malloc(size + align + sizeof(void *));
+    if (raw == 0)
+        return 0;
+
+    addr = (size_t)(raw + sizeof(void *));
+    addr = (addr + (align - 1)) & ~(align - 1);
+    payload = (char *)addr;
+    ((void **)(void *)payload)[-1] = (void *)raw;
+    return (void *)payload;
+}
+
+static inline void odfs_free_aligned(void *ptr)
+{
+    if (ptr)
+        odfs_free(((void **)ptr)[-1]);
+}
+
 #endif /* ODFS_ALLOC_H */

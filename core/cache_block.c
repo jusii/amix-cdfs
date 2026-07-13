@@ -202,6 +202,13 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     sector_size = odfs_media_sector_size(media);
     if (sector_size == 0)
         return ODFS_ERR_INVAL;
+    /* every supported medium uses power-of-two sectors; enforcing it here
+     * (BEFORE any allocation — a late failure used to leak the buffers)
+     * lets byte addressing use shifts instead of pulling the 64-bit
+     * division helpers out of libgcc, and is what lets the sector buffers
+     * below be aligned to the sector size */
+    if ((sector_size & (sector_size - 1u)) != 0)
+        return ODFS_ERR_INVAL;
 
     cache->entries = odfs_calloc(capacity, sizeof(odfs_cache_entry_t));
     if (!cache->entries)
@@ -245,9 +252,19 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
      * The per-entry path is kept as a fallback for memory-tight targets
      * (a small Amiga may have no contiguous capacity*sector_size block
      * even when the individual sectors would fit).
+     *
+     * Every sector buffer is aligned to the sector size (sector_size is a
+     * power of two, checked above): these buffers are DMA targets on
+     * real-hardware targets, and on the AMIX kernel — whose page size
+     * equals the 2048-byte CD sector and whose large kmem allocations are
+     * physically scattered — an unaligned sector buffer straddles a page
+     * boundary and a sector-sized transfer overruns into an unrelated
+     * physical page (see the odfs_malloc_aligned comment in odfs/alloc.h).
+     * Aligned, each sector occupies exactly one page and cannot overrun.
      */
     if ((size_t)capacity <= ((size_t)-1) / sector_size) {
-        cache->data_slab = odfs_malloc((size_t)capacity * sector_size);
+        cache->data_slab = odfs_malloc_aligned((size_t)capacity * sector_size,
+                                               sector_size);
     }
     if (cache->data_slab) {
         for (i = 0; i < capacity; i++) {
@@ -257,11 +274,12 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
         }
     } else {
         for (i = 0; i < capacity; i++) {
-            cache->entries[i].data = odfs_malloc(sector_size);
+            cache->entries[i].data = odfs_malloc_aligned(sector_size,
+                                                         sector_size);
             if (!cache->entries[i].data) {
                 /* roll back */
                 for (j = 0; j < i; j++)
-                    odfs_free(cache->entries[j].data);
+                    odfs_free_aligned(cache->entries[j].data);
                 odfs_free(cache->buckets);
                 odfs_free(cache->next);
                 odfs_free(cache->entries);
@@ -274,11 +292,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
 
     cache->capacity = capacity;
     cache->sector_size = sector_size;
-    /* every supported medium uses power-of-two sectors; enforcing it
-     * here lets byte addressing use shifts instead of pulling the
-     * 64-bit division helpers out of libgcc */
-    if ((sector_size & (sector_size - 1u)) != 0)
-        return ODFS_ERR_INVAL;
+    /* power-of-two sector_size was checked before the allocations above */
     cache->sector_shift = 0;
     {
         uint32_t sz = sector_size;
@@ -292,9 +306,10 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
     cache->media = media;
     cache->stream_buf = NULL;
     if (capacity >= 4u * ODFS_CACHE_READAHEAD) {
-        /* optional: read-ahead is skipped when this allocation fails */
-        cache->stream_buf = odfs_malloc((size_t)ODFS_CACHE_READAHEAD *
-                                        sector_size);
+        /* optional: read-ahead is skipped when this allocation fails.
+         * Sector-aligned for the same DMA reason as the slab above. */
+        cache->stream_buf = odfs_malloc_aligned((size_t)ODFS_CACHE_READAHEAD *
+                                                sector_size, sector_size);
     }
     cache_reset_indices(cache);
 
@@ -311,12 +326,12 @@ void odfs_cache_destroy(odfs_cache_t *cache)
     /* Slab mode frees the one slab this struct owns; only the fallback
      * mode trusts (and frees) the per-entry data pointers. */
     if (cache->data_slab) {
-        odfs_free(cache->data_slab);
+        odfs_free_aligned(cache->data_slab);
     } else {
         for (i = 0; i < cache->capacity; i++)
-            odfs_free(cache->entries[i].data);
+            odfs_free_aligned(cache->entries[i].data);
     }
-    odfs_free(cache->stream_buf);
+    odfs_free_aligned(cache->stream_buf);
     odfs_free(cache->buckets);
     odfs_free(cache->next);
     odfs_free(cache->entries);

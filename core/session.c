@@ -162,7 +162,12 @@ pvd_scan:
          * irrelevant, and the fix benefits every target (stack sector buffers
          * are fragile everywhere).
          */
-        buf = odfs_malloc(ISO_SECTOR_SIZE);
+        /* Sector-aligned: this buffer is handed straight to the media
+         * backend — a DMA target on hardware targets. On the AMIX kernel
+         * (2048-byte pages, physically scattered kmem) an unaligned sector
+         * buffer makes the transfer overrun into an unrelated physical
+         * page; aligned, it occupies exactly one page. */
+        buf = odfs_malloc_aligned(ISO_SECTOR_SIZE, ISO_SECTOR_SIZE);
         if (buf == NULL)
             return ODFS_OK; /* no scan buffer: fall back to first session */
 
@@ -205,7 +210,7 @@ pvd_scan:
                        best_lba);
         }
 
-        odfs_free(buf);
+        odfs_free_aligned(buf);
     }
 
     return ODFS_OK;
