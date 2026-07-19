@@ -19,6 +19,7 @@
 #if defined(ODFS_PLATFORM_AMIX_KERNEL)
 
 #include "cdfs.h"
+#include "cdfs_blocks.h"    /* cdfs_bytes_to_dev_blocks() — st_blocks math */
 
 #include <sys/errno.h>
 #include <sys/uio.h>        /* struct uio, uiomove, UIO_READ */
@@ -128,7 +129,12 @@ static int cdfs_getattr(struct vnode *vp, struct vattr *vap, int flags,
     cdfs_time_to_timestruc(&n->ctime, &vap->va_ctime);
     vap->va_rdev = 0;
     vap->va_blksize = 2048;
-    vap->va_nblocks = (u_long)((n->size + 2047u) / 2048u);
+    /* st_blocks is in DEV_BSIZE (512 B) units, rounded up to a whole 2048-byte
+     * logical sector — see cdfs_blocks.h for the SVR4 authority and for why
+     * this must NOT be written as a 64-bit divide (__udivdi3 is broken in the
+     * on-box kernel link). n->size is truncated exactly as va_size is, since
+     * the SVR4 vattr is 32-bit throughout. */
+    vap->va_nblocks = (u_long)cdfs_bytes_to_dev_blocks((unsigned long)n->size);
     vap->va_vcode = 0;
 
     return 0;
