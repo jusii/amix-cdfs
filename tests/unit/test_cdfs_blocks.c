@@ -9,11 +9,12 @@
  * Regression origin: on metal (A4000+Z3660, 2026-07-19) `ls -ls /cdrom`
  * reported 32848 blocks for a 6-byte file and a negative directory total. The
  * old expression was a 64-bit divide, `(n->size + 2047u) / 2048u`, which m68k
- * GCC 2.7.2.3 lowers to an out-of-line __udivdi3 call that is mis-resolved in
- * the on-box kernel link. The observed values were not quotients at all:
- * 32848 == (6 + 2047) << 4 and 33152 == (25 + 2047) << 4 — an intermediate of
- * libgcc's normalization step. Both are pinned below as must-never-return
- * values.
+ * GCC 2.7.2.3 lowers to an out-of-line __udivdi3 call. On metal that call
+ * returns an intermediate of libgcc's normalization step rather than the
+ * quotient: 32848 == (6 + 2047) << 4 and 33152 == (25 + 2047) << 4. (The
+ * symbol resolves fine at link time — the mechanism behind the wrong return
+ * value is still unidentified; see docs/amix-known-unknowns.md.) Both values
+ * are pinned below as must-never-return fingerprints.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */

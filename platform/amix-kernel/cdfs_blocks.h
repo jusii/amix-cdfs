@@ -32,16 +32,32 @@
  * `n->size` is a uint64_t, but va_nblocks is a 32-bit u_long, so the natural
  * expression `(n->size + 2047) / 2048` is a 64-bit divide. On m68k GCC 2.7.2.3
  * that is NOT strength-reduced to a shift: it emits an out-of-line call to
- * __udivdi3, which the cdfs kernel object leaves undefined for amix-kerntools
- * to resolve out of a pushed libgcc.a at the real kernel link. That binding is
- * demonstrably broken on metal — it returns an internal intermediate of the
- * routine's normalization step instead of the quotient (see the 2026-07-19
- * st_blocks investigation). Everything else in cdfs_getattr was correct
- * precisely because no other field needs 64-bit soft arithmetic.
+ * __udivdi3.
  *
- * So: shift, don't divide. A 32-bit `>>` is inline m68k code and calls
- * nothing. (`__lshrdi3`, the 64-bit shift helper the proven-good read path in
- * odfs_cache_read_bytes() uses, is a different symbol and is NOT implicated.)
+ * OBSERVED on metal (2026-07-19): that call returns an internal intermediate of
+ * libgcc __udivdi3's normalization step instead of the quotient. The returned
+ * value fits `(size + 2047) << 4` exactly across four independent data points
+ * (two files, two directory totals) — which is `(n0 << bm) >> 16` for the
+ * routine's own bm=20, i.e. its partial remainder. This part is solid evidence.
+ *
+ * NOT ESTABLISHED: why. The symbol is NOT missing or unresolved — `nm
+ * /stand/unix` on metal shows __udivdi3 linked as a GLOB FUNC at a sane text
+ * address with the right size, alongside __umoddi3, __lshrdi3 and the two
+ * (legitimately LOCL, per-object) copies of __clz_tab it depends on. So the
+ * mechanism is something other than a bad link-time binding, and as of
+ * 2026-07-19 it remains UNIDENTIFIED. Do not let a guess harden into fact here.
+ *
+ * The mitigation is correct regardless of the mechanism: va_nblocks is 32-bit,
+ * so this arithmetic never needed 64 bits in the first place. Shift, don't
+ * divide — a 32-bit `>>` is inline m68k code and calls nothing. That is why
+ * everything else in cdfs_getattr was right: no other field needs 64-bit soft
+ * arithmetic. (`__lshrdi3`, the 64-bit shift helper used by the read path in
+ * odfs_cache_read_bytes(), is a different symbol, is empirically correct on
+ * metal, and is NOT implicated.)
+ *
+ * Other call sites that still perform 64-bit division, and would return wrong
+ * values IF the misbehaviour turns out to be general, are catalogued in
+ * docs/amix-known-unknowns.md.
  *
  * SPDX-License-Identifier: BSD-2-Clause
  */
