@@ -5,13 +5,21 @@ but no established *mechanism*. Kept separate from the code comments on purpose:
 unproven cause that hardens into a load-bearing comment is how a plausible guess
 becomes a false fact.
 
-Each entry states what is evidence, what is hypothesis, and what would settle it.
+Each entry states what is evidence, what is hypothesis, and what would settle it —
+and, once settled, how. A resolved entry is kept here (marked RESOLVED, with its
+evidence chain intact) rather than deleted: the record of *how* a mechanism was
+finally pinned down is worth as much as the answer.
 
 ---
 
-## 1. `__udivdi3` returns a wrong value in the kernel (2026-07-19, OPEN)
+## 1. `__udivdi3` returned a wrong value in the kernel (2026-07-19, RESOLVED 2026-07-21)
 
-### What is established
+**Resolved on metal 2026-07-21.** The root cause was an assembler encoding bug in the
+cross toolchain's `libgcc.a` — not anything in cdfs, and not the kernel link. The
+evidence that opened this entry is kept below for the record; the resolution follows
+it.
+
+### What was established (the original observations)
 
 On metal (A4000 + Z3660, kernel `sum -r /stand/unix` = 10842, cdfs at 31e8c3b), the
 64-bit divide in `cdfs_getattr()`
@@ -46,52 +54,111 @@ intermediate of the division loop.
 The root directory's `total` printed as `4293100864`, i.e. a **negative** signed
 `st_blocks` (`<sys/stat.h>` declares `long st_blocks`) that `ls` renders unsigned.
 
-### What is NOT established
+### Root cause (found 2026-07-21)
 
-**Why.** The first hypothesis — a missing or mis-resolved link-time binding — is
-**refuted**. `nm /stand/unix` on metal shows:
+GNU **as 2.8.1** assembled gcc 2.7.2.3's SGS `tdivs.l` / `tdivu.l` — the
+**32-bit-dividend** divide-with-remainder form — as the **64-bit-dividend** form,
+setting the extension-word SIZE bit (`0x0400`) that selects a full 64-bit dividend
+in `Dr:Dq`. The mis-encoded instruction then reads a 64-bit dividend whose high half
+is a live loop intermediate, overflows, and — per the 68030's
+**divide-overflow-leaves-the-registers-unchanged** behaviour — returns that
+normalization intermediate untouched. That is exactly the `(size + 2047) << 4` value
+tabulated above.
 
-```
-[6502] |  951104 | 1052 | FUNC | GLOB | 1 | __udivdi3
-[7295] |  952156 | 1128 | FUNC | GLOB | 1 | __umoddi3
-[4809] |  953284 |   84 | FUNC | GLOB | 1 | __lshrdi3
-[4710] |    3723 |  256 | OBJT | LOCL | 2 | __clz_tab
-[4713] |    3979 |  256 | OBJT | LOCL | 2 | __clz_tab
-```
+The bug was uniform, not per-call-site. Every DImode libgcc helper was affected —
+`__udivdi3`, `__umoddi3`, `__divdi3`, `__moddi3`, and `__udivmoddi4` each carried
+**8 broken divides**. Every divide in them was compiler-generated: the mc68020
+inline-asm `udiv_qrnnd` path was never compiled in, because the libgcc build carried
+no `-m68020`. So the fault lived in the helpers themselves, identically, wherever
+they were linked.
 
-`__udivdi3` is linked, global, a real `FUNC`, at a sane text address, with a
-plausible size. `__clz_tab` — the leading-zero table `__udivdi3` needs for
-normalization — is present; the two copies are `LOCL` statics from two libgcc
-objects, which is legal and expected, and their small values are section-relative
-(normal for non-text symbols on this kernel, the same property `amix-kerntools`'
-`tools/strstat.py` documents and works around).
+**Fix:** gcc-cross-amix `984192a` — an assembler wrapper that rewrites the
+mis-encoded forms to `divsl.l` / `divul.l`; `libgcc.a` rebuilt 2026-07-21.
 
-So the mechanism is something other than a bad binding, and **as of 2026-07-19 it is
-unidentified.**
+### Before / after on the same machine
 
-Also ruled out, so nobody re-runs them:
+Same physical A4000 + Z3660, same disc, single variable = the kernel's `libgcc` plus
+its cdfs `exp`:
 
-- **Z3660 CPU emulation of `divu.l`.** The UAE core's `m68k_divl()`
-  (`Z3660/z3660-firmware/Z-TURN/vitis_ide/Z3660_emu/src/uae/newcpu_common.cpp:907`)
-  decodes Dq/Dr and the `0x400` 64-bit-dividend bit correctly on inspection.
-- **`/usr/sys/fs/libfsgcc.a` missing on the box.** It is not there, but that is a
-  build-time staging artifact that simply was not left behind — not evidence.
-- **A native userland control on the box.** Not possible: metal has only AT&T `cc`
-  (1991) and no `libgcc.a`, and AT&T `cc` does not emit `__udivdi3` at all.
-  Settling this needs a **cross-compiled test binary pushed from the host** via
-  `gcc-cross-amix`.
+| `ls -ls /cdrom` | OLD kernel `sum -r` 10842 | NEW kernel `sum -r` 00961 |
+|---|---|---|
+| `total` (root) | 4293100864 | 24 |
+| `SHORT.TXT` (6 B) | 32848 | 4 |
+| `café.txt` (25 B) | 33152 | 4 |
+| symlink | −2097152 | 0 |
+| `deep` | 65520 | 4 |
 
-### Scope of the exposure
+The NEW kernel was booted with a fresh `libgcc` **and** a fresh cdfs `exp`, boot
+chain rewritten, `bootchain-verify` PASS. Every value is correct.
 
-The ISO9660 / Rock Ridge **read path is empirically correct on metal** (5/5
-validated, byte-identical reads). It uses only `__lshrdi3`
-(`odfs_cache_read_bytes`), a different symbol, which is therefore known-good.
-Whatever is wrong does not break that path.
+### How it was isolated to `__udivdi3` (the nuance)
+
+The NEW `exp` also carries the shift-based `st_blocks` fix — cdfs no longer divides
+in `cdfs_getattr()` — so `ls -ls` being correct does **not** by itself prove the
+helper. The isolating probe was a **userland exerciser statically carrying the
+rebuilt `libgcc`'s `__udivdi3`**, run **on metal**:
+
+| input | correct | rebuilt libgcc | old libgcc |
+|---|---|---|---|
+| `2053 / 2048` | q 1, r 5 | q 1, r 5 | (intermediate) |
+| `(6 + 2047) / 2048` | 1 | 1 | 32848 |
+| `(25 + 2047) / 2048` | 1 | 1 | 33152 |
+| `1475108 / 2048` | q 720, r 548 | q 720, r 548 | (intermediate) |
+
+All PASS with the rebuilt helper; the old helper returned the documented
+intermediates on this same machine.
+
+This **refutes the last standing binding-shaped hypothesis** — that a relocation
+applied wrongly at kernel-link time corrupted the helper (item 3 of the old "what
+would settle it"). Nothing about the kernel link changed the helper's correctness: a
+userland binary that never touches the kernel link showed the identical fault and
+the identical fix. The assembler encoding did it.
+
+### Full gate
+
+`tools/hw-ops/validate-metal.sh --expect-sum 00961 --cycles 5` = **PASS**: mount,
+byte-identical CD reads vs `test_rr.iso` host truth, DMA canary clean 5/5.
+
+### Hypotheses considered, and how each resolved
+
+- **A missing / mis-resolved link-time binding.** Refuted 2026-07-19 by
+  `nm /stand/unix` — `__udivdi3` was linked, global, a real `FUNC` at a sane text
+  address with a plausible size, and its `__clz_tab` normalization table was present
+  (two legal `LOCL` copies, values section-relative as `tools/strstat.py`
+  documents):
+
+  ```
+  [6502] |  951104 | 1052 | FUNC | GLOB | 1 | __udivdi3
+  [7295] |  952156 | 1128 | FUNC | GLOB | 1 | __umoddi3
+  [4809] |  953284 |   84 | FUNC | GLOB | 1 | __lshrdi3
+  [4710] |    3723 |  256 | OBJT | LOCL | 2 | __clz_tab
+  [4713] |    3979 |  256 | OBJT | LOCL | 2 | __clz_tab
+  ```
+
+  Refuted again, harder, by the userland probe above.
+- **A relocation applied wrongly at kernel-link time.** The one binding-shaped
+  hypothesis `nm` could not exclude. Refuted by the userland probe: a binary with no
+  kernel link showed the identical fault.
+- **Z3660 CPU emulation of `divu.l`.** Ruled out 2026-07-19 on inspection of the UAE
+  core's `m68k_divl()` — it decodes `Dq/Dr` and the `0x400` 64-bit-dividend bit
+  correctly. That is fully *consistent* with the final cause: the emulator faithfully
+  executed the mis-encoded 64-bit form; the wrong `0x400` bit was baked into the
+  instruction stream by the assembler, not misdecoded at run time.
+- **`/usr/sys/fs/libfsgcc.a` missing on the box.** A build-time staging artifact,
+  never evidence — confirmed irrelevant.
+- **"No native userland control is possible."** This was the wrong constraint. A
+  **cross-compiled** exerciser from `gcc-cross-amix` (metal has only AT&T `cc` and no
+  `libgcc.a`) *was* the control — and it is what settled the entry.
+
+### Scope of the exposure (updated)
+
+The ISO9660 / Rock Ridge read path was always empirically correct on metal (5/5,
+byte-identical). It uses `__lshrdi3`, a different helper that the `divsl`/`divul` fix
+does not touch and that was never mis-encoded.
 
 `cdfs_getattr` was the only `__udivdi3` call site an ISO9660 mount exercised
-per-file, and it no longer performs 64-bit division. The remaining call sites in
-`build/amix-kernel/libcdfskern.o` **will return wrong values IF the misbehaviour is
-general** — this is unproven, and none of them has been observed misbehaving:
+per-file, and it no longer performs 64-bit division (shift-based `st_blocks`). The
+remaining call sites still linked into `build/amix-kernel/libcdfskern.o` —
 
 | function | helpers | when it runs |
 |---|---|---|
@@ -101,10 +168,14 @@ general** — this is unproven, and none of them has been observed misbehaving:
 | `hfs_probe`, `hfs_mount`, `hfs_read_node`, `hfs_get_volume_size` | `__udivdi3`, `__umoddi3` | HFS |
 | `hfsp_mount`, `hfsp_read_fork`, `hfsp_get_volume_size` | `__udivdi3`, `__umoddi3` | HFS+ |
 
-`hfs_probe` and the volume-size calls sit on the mount/probe path, so **HFS and UDF
-probing is unproven on metal**, not known-bad.
+— remain **unexercised end-to-end on metal**, so HFS / HFS+ / UDF probing is still
+*unproven* as whole paths. But the specific failure mode that opened this entry is
+**closed**: the underlying `__udivdi3` / `__umoddi3` helpers are now **metal-proven
+correct** on this machine (see the userland exerciser above), so "unproven" no longer
+means "the divide helper will hand back garbage." It means only that the paths
+themselves have not yet been run.
 
-To enumerate the current set after any change:
+To re-enumerate the helper call sites after any change:
 
 ```sh
 make amix-kernel
@@ -112,20 +183,11 @@ m68k-cbm-sysv4-objdump -d --reloc build/amix-kernel/libcdfskern.o \
   | awk '/^[0-9a-f]+ </{fn=$2} /__udivdi3|__umoddi3|__lshrdi3/{print fn, $NF}'
 ```
 
-### What would settle it
+### Standing rule
 
-1. Cross-compile a minimal `__udivdi3` exerciser with `gcc-cross-amix`, push it to
-   the box, and run it in **userland** — does `2053ULL / 2048ULL` yield 1 there? That
-   separates "libgcc/CPU is wrong" from "something about the kernel context is wrong".
-2. If userland is fine, instrument the **kernel** side: a `cmn_err` in cdfs printing
-   `__udivdi3(2053, 2048)` at mount time, which distinguishes a wrong callee from a
-   wrong call.
-3. Disassemble `__udivdi3` **as linked in `/stand/unix`** (at 951104) and diff it
-   against the cross `libgcc.a` copy — this would catch a relocation applied wrongly
-   at kernel-link time, which is the one binding-shaped hypothesis the `nm` output
-   does not exclude.
-
-### Standing rule until it is settled
-
-In AMIX kernel code, **prefer shifts to 64-bit division**, and where a 64-bit divide
-is genuinely needed, treat its result as suspect until validated on metal.
+**Kept as defensive style guidance** — no longer a correctness workaround, but still
+worth following: in AMIX kernel code, prefer a shift to a 64-bit division where the
+divisor is a power of two. The helper is proven, so this is now about speed and
+clarity — an out-of-line DImode divide on a 68030 is costly, and a toolchain-encoding
+bug in exactly this instruction family is the kind that can resurface on a toolchain
+rebuild. Cheap insurance, so it stays.
