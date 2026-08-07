@@ -14,9 +14,13 @@
  * The wait mirrors scsi.c:gsioctl (sdqueue(); sdspl(); until(done) sleep();
  * spl0()) but WITHOUT gsioctl's copyin/static-iobuf/copyout: each request
  * carries its own `done` flag and sleep channel, never gsioctl's file-static
- * ones, so concurrent mounts do not collide. The completion handler recovers
- * its request from the sdcom pointer the driver passes to (*cp->intr)(cp),
- * relying on the sdcom being the first member of the request struct.
+ * ones, so concurrent mounts do not collide. Each request is a per-call
+ * kmem-heap allocation — globally mapped, NEVER a stack local, because an
+ * interrupt-completing HBA driver dereferences it in arbitrary process
+ * context (the amix_kern_req_t contract comment below has the full story).
+ * The completion handler recovers its request from the sdcom pointer the
+ * driver passes to (*cp->intr)(cp), relying on the sdcom being the first
+ * member of the request struct.
  *
  * `struct sdcom` + SDCARDS/SDUNITS come verbatim from the cross sysroot's
  * kernel headers (usr/sys/amiga/alien/{rico.h,sd.h}); the ABI is never hand-
@@ -108,6 +112,26 @@ typedef struct amix_kern_ctx {
  * One in-flight request. `sc` MUST be the first member: the SCSI driver
  * completes a request by calling (*cp->intr)(cp) with the sdcom pointer, so
  * the completion handler casts that pointer straight back to this struct.
+ *
+ * LIFETIME/MAPPING CONTRACT (the P5.4 remount-cycle panic): a request handed
+ * to sdqueue() MUST live in GLOBALLY-MAPPED kernel memory — kmem heap or
+ * statics — NEVER on the caller's kernel stack. On AMIX the kernel stack
+ * lives in the per-process u-area window (a fixed virtual range, ~0x40001xxx,
+ * REMAPPED at every context switch), and an interrupt-completing HBA driver
+ * (a3091/a4091) delivers the completion from its ISR in WHATEVER process
+ * context the interrupt happens to land in: while the submitter sleeps below,
+ * another process is on-CPU, and the driver's `cp` — a u-area-window address —
+ * then resolves into THAT process's stack. The ISR reads cp->next, writes
+ * cp->okay/cp->status into the victim's stack, and jumps through a garbage
+ * cp->intr (a3091intr case 0: `moveal %a2@(36),%a0; jsr %a0@`) — the
+ * KERNEL FAULT psw=0x2200 wild-pc panic in an unrelated process (bench:
+ * flopd blocked in fdopen; the P5.4 card-0 repro). Every stock client obeys
+ * this contract with permanent sdcoms (dd.c: ddtab[][].com; scsi.c gsioctl: a
+ * file-static); the same class was proven once before on metal as the T2.P3
+ * mount panic (z3660scsi's then timeout()-deferred completion dereferencing a
+ * dead stack sdcom). A purely synchronous in-context driver (today's
+ * z3660scsi) never dereferences cross-context — which is why card 1 on the
+ * bench survived what card 0 (a3091, interrupt-completing) died of.
  */
 typedef struct amix_kern_req {
     struct sdcom   sc;
@@ -135,21 +159,22 @@ static odfs_err_t amix_kern_submit(amix_kern_ctx_t *ctx,
                                    unsigned int nbyte)
 {
     /*
-     * req.sc (the sdcom the HBA driver operates on) lives on THIS stack frame,
-     * so the request MUST be fully completed before this function returns: the
-     * sleep loop below spins until req.done is set from the completion handler,
-     * keeping the frame — and thus the sdcom — alive for the whole transaction.
-     * The z3660 driver now completes the request synchronously, in this call's
-     * own context. Its earlier design deferred completion to a cross-context
-     * timeout() callout that fired AFTER this frame had returned, dereferencing
-     * the by-then-dead stack sdcom — the T2.P3 metal mount panic.
+     * The request is allocated from the kmem heap, NEVER on this stack frame:
+     * see the amix_kern_req_t contract comment above. The heap block is
+     * mapped identically in every process context, so the HBA driver's queue
+     * links and its (possibly foreign-context) completion ISR always
+     * dereference the real request — a stack `req` here was the P5.4
+     * remount-cycle wild-pc panic. The sleep loop below still keeps the
+     * request alive for the whole transaction; it is freed only after the
+     * completion handler has fired.
      */
-    amix_kern_req_t req;
-    unsigned int    i;
+    amix_kern_req_t *req;
+    odfs_err_t       err;
+    unsigned int     i;
 
     if (ctx == 0)
         return ODFS_ERR_IO;
-    if (cdb_len > sizeof(req.sc.cdb))
+    if (cdb_len > sizeof(req->sc.cdb))   /* sizeof: constant, req not read */
         return ODFS_ERR_INVAL;
 
     /*
@@ -175,21 +200,23 @@ static odfs_err_t amix_kern_submit(amix_kern_ctx_t *ctx,
         return ODFS_ERR_INVAL;
     }
 
-    /* Zero the whole sdcom, exactly as gsioctl does (no partial init). */
-    for (i = 0; i < (unsigned int)sizeof(req.sc); i++)
-        ((char *)&req.sc)[i] = 0;
-    req.done = 0;
+    /* odfs_calloc = kmem_zalloc(KM_SLEEP): globally-mapped, zeroed — the
+     * whole-sdcom zeroing gsioctl does is covered by the calloc. Process
+     * context only, so blocking for memory is fine (same as the read bounce). */
+    req = (amix_kern_req_t *)odfs_calloc(1, sizeof(*req));
+    if (req == 0)
+        return ODFS_ERR_NOMEM;
 
-    req.sc.card    = ctx->card;
-    req.sc.unit    = ctx->unit;
-    req.sc.reading = (bool)(reading ? TRUE : FALSE);
+    req->sc.card    = ctx->card;
+    req->sc.unit    = ctx->unit;
+    req->sc.reading = (bool)(reading ? TRUE : FALSE);
     /* Bus address for the driver's DMA. Identity-mapped on AMIX, but run it
      * through vtop() anyway so the value is correct if that ever changes. */
-    req.sc.addr    = (caddr_t)vtop(data, (struct proc *)0);
-    req.sc.nbyte   = nbyte;
+    req->sc.addr    = (caddr_t)vtop(data, (struct proc *)0);
+    req->sc.nbyte   = nbyte;
     for (i = 0; i < cdb_len; i++)
-        req.sc.cdb[i] = (uchar)cdb[i];
-    req.sc.intr = amix_kern_intr;
+        req->sc.cdb[i] = (uchar)cdb[i];
+    req->sc.intr = amix_kern_intr;
 
     /*
      * Raise to spl2 (mask the IPL2 clock/SCSI interrupt) BEFORE issuing, so
@@ -205,15 +232,19 @@ static odfs_err_t amix_kern_submit(amix_kern_ctx_t *ctx,
      * with spl0). Do NOT reorder sdspl() back below sdqueue().
      */
     sdspl();
-    sdqueue(&req.sc);
-    while (!req.done)
-        sleep((caddr_t)&req.sc, PRIBIO);
+    sdqueue(&req->sc);
+    while (!req->done)
+        sleep((caddr_t)&req->sc, PRIBIO);
     spl0();
 
-    if (!req.sc.okay || req.sc.status != 0)
-        return ODFS_ERR_IO;
-
-    return ODFS_OK;
+    /* Completion has fired (done set by amix_kern_intr); the driver holds no
+     * live reference — its queue head advanced past this sdcom before the
+     * intr call, and the dangling per-unit tail pointer the stock queue
+     * discipline leaves behind is only ever read under a non-empty queue,
+     * which the next enqueue re-seeds. Safe to free. */
+    err = (!req->sc.okay || req->sc.status != 0) ? ODFS_ERR_IO : ODFS_OK;
+    odfs_free(req);
+    return err;
 }
 
 /* ---- media ops -------------------------------------------------------- */
