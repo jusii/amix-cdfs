@@ -17,7 +17,9 @@ typedef enum odfs_err {
     ODFS_ERR_RANGE,          /* value out of range */
     ODFS_ERR_OVERFLOW,       /* overflow detected */
 
-    /* media errors */
+    /* device and media errors */
+    ODFS_ERR_NO_DEVICE,      /* no device at this address */
+    ODFS_ERR_NOT_OPTICAL,    /* device answers, but is not an optical drive */
     ODFS_ERR_NO_MEDIA,       /* no media present */
     ODFS_ERR_BAD_SECTOR,     /* unreadable sector */
     ODFS_ERR_MEDIA_CHANGED,  /* media changed unexpectedly */

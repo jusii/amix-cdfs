@@ -392,9 +392,17 @@ static odfs_err_t amix_kern_check_inquiry(amix_kern_ctx_t *c)
 
     err = amix_kern_submit(c, cdb, 6, 1, data, 36u);
 
-    /* Peripheral device type is the low 5 bits of byte 0. 0x05 = CD-ROM. */
+    /*
+     * Peripheral device type is the low 5 bits of byte 0. 0x05 = CD-ROM.
+     *
+     * A target that ANSWERS but is not type 0x05 is its own verdict: the
+     * address names a real device, it is simply the wrong kind (a disk, a
+     * tape). It is neither an I/O failure nor an empty card slot, so it gets
+     * its own error code rather than the generic UNSUPPORTED — cdfs_errno()
+     * maps it to ENOTTY, which no other cdfs path produces.
+     */
     if (err == ODFS_OK && (data[0] & 0x1f) != 0x05)
-        err = ODFS_ERR_UNSUPPORTED;
+        err = ODFS_ERR_NOT_OPTICAL;
 
     odfs_free_aligned(data);
     return err;
@@ -445,6 +453,7 @@ odfs_err_t odfs_kern_media_open_scsi(unsigned int card, unsigned int unit,
 {
     amix_kern_ctx_t *c;
     odfs_err_t       err;
+    int              rc;
 
     if (out == 0)
         return ODFS_ERR_INVAL;
@@ -455,9 +464,24 @@ odfs_err_t odfs_kern_media_open_scsi(unsigned int card, unsigned int unit,
      * Validate + init the card once. sdopen() runs the controller probe that
      * populates the queue table sdqueue() dispatches through, and is
      * idempotent, so a single call at open is enough. Declared in sd.h.
+     *
+     * A nonzero return means the card slot holds NO REGISTERED CONTROLLER:
+     * the address names nothing, as opposed to naming a drive that failed to
+     * talk. Reporting that as ODFS_ERR_IO (errno 5) hid it behind the same
+     * EIO as a genuine transport failure and a bad-format disc, and cost
+     * three separate investigations — the stock kernel unregisters the a3091
+     * once memory exceeds 64 MB (support.c), so an empty card slot is a
+     * routine configuration outcome that must be readable straight off
+     * mount(1M)'s message. ODFS_ERR_NO_DEVICE -> ENXIO, and the console
+     * warning names the card so the cause is on the log even when the caller
+     * discards the errno.
      */
-    if (sdopen(card) != 0)
-        return ODFS_ERR_IO;
+    rc = sdopen(card);
+    if (rc != 0) {
+        cmn_err(CE_WARN, "cdfs: card %d not registered (sdopen=%d)",
+                (int)card, rc);
+        return ODFS_ERR_NO_DEVICE;
+    }
 
     c = (amix_kern_ctx_t *)odfs_calloc(1, sizeof(*c));
     if (c == 0)

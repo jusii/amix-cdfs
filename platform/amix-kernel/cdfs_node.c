@@ -93,6 +93,18 @@ void cdfs_time_to_timestruc(const odfs_timestamp_t *ts, timestruc_t *out)
     out->tv_sec = secs;
 }
 
+/*
+ * odfs_err_t -> SVR4 errno.
+ *
+ * The distinctions this table preserves are the ONLY diagnosis a mount failure
+ * gets: mount(2) returns an errno and nothing else, so every verdict collapsed
+ * into EIO here is a verdict the operator cannot tell apart from a cable fault.
+ * That is not hypothetical — "mount -F cdfs 1,3" against a card the kernel had
+ * silently unregistered surfaced as errno 5, indistinguishable from a real read
+ * error and from an unreadable disc, and was chased three times before the
+ * cause was found. So EIO is reserved for "the device failed to deliver
+ * readable data"; anything the code KNOWS more precisely gets its own arm.
+ */
 int cdfs_errno(odfs_err_t err)
 {
     switch (err) {
@@ -101,6 +113,31 @@ int cdfs_errno(odfs_err_t err)
         return 0;
     case ODFS_ERR_NOMEM:
         return ENOMEM;
+    case ODFS_ERR_NO_DEVICE:
+        /* No controller registered at this card index — the address names
+         * nothing at all. ENXIO ("no such device or address") is exactly the
+         * SVR4 verdict for that, and is NOT an I/O error. */
+        return ENXIO;
+    case ODFS_ERR_NOT_OPTICAL:
+        /* The target answered INQUIRY but is not peripheral type 0x05: the
+         * device is present, just the wrong kind. ENODEV/ENXIO would both
+         * read as "absent" (their strerror texts are near-identical), which
+         * would re-merge this with the case above; ENOTTY is the classic UNIX
+         * "inappropriate device for this operation" and is produced nowhere
+         * else in cdfs, so it is an unambiguous fingerprint. */
+        return ENOTTY;
+    case ODFS_ERR_BAD_FORMAT:
+        /* The disc read fine; no backend recognized a filesystem on it.
+         * EINVAL matches how the stock SVR4 filesystems report a superblock
+         * they cannot make sense of (s5mount). */
+        return EINVAL;
+    case ODFS_ERR_UNSUPPORTED:
+        /* Recognized, but a shape this driver does not serve — a block size
+         * other than 2048, a capacity past READ CAPACITY(10)'s range, or an
+         * optional op with no backend behind it. Same errno as BAD_FORMAT
+         * today; kept as its own arm so the two can diverge later without
+         * re-deriving which call sites feed them. */
+        return EINVAL;
     case ODFS_ERR_INVAL:
     case ODFS_ERR_RANGE:
     case ODFS_ERR_OVERFLOW:
@@ -116,7 +153,9 @@ int cdfs_errno(odfs_err_t err)
     case ODFS_ERR_NAME_TOO_LONG:
         return ENAMETOOLONG;
     default:
-        /* IO / BAD_SECTOR / NO_MEDIA / MEDIA_CHANGED / BAD_FORMAT / etc. */
+        /* Genuine I/O only: IO / BAD_SECTOR / NO_MEDIA / MEDIA_CHANGED /
+         * CORRUPT / LOOP. EIO out of cdfs now means the device did not
+         * deliver readable data — nothing else. */
         return EIO;
     }
 }
