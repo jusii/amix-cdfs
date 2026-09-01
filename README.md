@@ -6,6 +6,8 @@ ODFileSystem is a read-only optical-disc filesystem driver for Amiga systems. It
 
 The project also includes host-side tools and tests so most parser and cache logic can be developed and validated outside an Amiga environment.
 
+Beside the AmigaDOS handler, the same core builds for AMIX — Commodore's SVR4/m68k UNIX — where it runs as an in-kernel filesystem mounted with `mount -F cdfs`. See [Building for AMIX](#building-for-amix-svr4m68k).
+
 ## Purpose
 
 ODFileSystem is the most modern and complete optical-disc filesystem for the Amiga. The handler deals with AmigaDOS packets, locks, and file handles, while the core library and backend parsers detect media formats, choose the appropriate view of hybrid discs, enumerate directories, and read file data.
@@ -44,6 +46,7 @@ ODFileSystem currently includes backends for:
 - Path lookup, directory enumeration, and file reads
 - Block-cache based media access
 - Host-side tools for inspecting image files
+- AMIX (SVR4/m68k) in-kernel `cdfs` filesystem, plus cross-built AMIX tools
 
 ### Feature Matrix
 
@@ -344,6 +347,121 @@ See [mountlist.example](docs/mountlist.example)
 for a fuller example with hardware notes, and
 [CD0](platform/amiga/dosdrivers/CD0) for the
 packaged DOSDriver entry used with Workbench.
+
+## Building for AMIX (SVR4/m68k)
+
+AMIX is Commodore's SVR4 UNIX for the 68030 Amiga. It is a full target beside
+AmigaOS 3 and 4, running the same portable core and backend parsers behind two
+new frontends: a set of cross-built tools that read images and raw devices, and
+an **in-kernel SVR4 vfs/vnode filesystem** named `cdfs`, which `mount -F cdfs`
+mounts like any other SVR4 filesystem. The AmigaDOS handler is not involved and
+is not changed by any of it.
+
+### The two build arms
+
+```sh
+make amix          # libodfs.a + imginfo/imgls/imgcat + the mount helper
+make amix-kernel   # one relocatable kernel object
+```
+
+`make amix` writes `build/amix/`: `libodfs.a` cross-built for AMIX, the three
+`img*` tools linked against it, and `mount` — the SVR4 mount helper installed on
+the box as `/usr/lib/fs/cdfs/mount`. The library pairs the shared core with two
+AMIX media backends: `platform/amix/amix_file_media.c` reads an ISO image or a
+raw disk slice through `open`/`lseek`/`read`, and `platform/amix/amix_scsi_media.c`
+talks to a real drive through the `/dev/scsi` GSIO ioctl.
+
+`make amix-kernel` writes `build/amix-kernel/libcdfskern.o`: the same core and
+backends compiled for the kernel (`-DODFS_PLATFORM_AMIX_KERNEL -D_KERNEL`, no
+libc, no syscalls), plus the vfsops/vnodeops/node-cache glue and an in-kernel
+SCSI media backend, combined by `ld -r` into one relocatable object. This is the
+actual deliverable; see [platform/amix-kernel/README.md](platform/amix-kernel/README.md).
+
+The two arms are independent of each other and of `host`, `amiga` and `check`,
+and write to their own build directories.
+
+### Toolchain
+
+Both arms cross-compile with `m68k-cbm-sysv4-gcc` from the `gcc-cross-amix`
+toolchain — GCC **2.7.2.3**, the period compiler. That is why the shared
+`core/` and `backends/` code is kept C89-clean: no `for`-loop initial
+declarations, no declarations after statements.
+
+The Makefile looks for the toolchain under `/opt/amix-cross`. Point it
+elsewhere with `AMIX_CROSS_PREFIX`, or override the individual tools:
+
+```sh
+make amix        AMIX_CROSS_PREFIX=/path/to/amix-cross
+make amix-kernel AMIX_CROSS_PREFIX=/path/to/amix-cross
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AMIX_CROSS_PREFIX` | `/opt/amix-cross` | Root of the cross toolchain |
+| `AMIX_CC` | `$(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-gcc` | The cross compiler, for both arms |
+| `AMIX_AR` | `ar` | Archiver for `build/amix/libodfs.a`. The host `ar` by default: the toolchain's GNU ar 2.8.1 aborts on archive creation, and the cross `ld` reads the host armap fine |
+| `AMIX_LD` | `$(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-ld` | Used for the `ld -r` that combines the kernel objects |
+| `AMIX_SYSROOT` | `$(AMIX_CROSS_PREFIX)/m68k-cbm-sysv4/sysroot` | Where the two SCSI backends find the kernel's `rico.h`/`sd.h` |
+
+### Why there is a fixed-width-type shim
+
+The AMIX sysroot ships neither `<stdint.h>` nor `<inttypes.h>`, and GCC 2.7.2.3
+predates both — so the shared code's existing `#include <stdint.h>` lines have
+nothing to resolve against. [`include/odfs/compat_stdint.h`](include/odfs/compat_stdint.h)
+supplies exactly the set this tree uses, and `platform/amix/compat/stdint.h` and
+`platform/amix/compat/inttypes.h` forward to it. That compat directory is placed
+ahead of the sysroot on the include path, so no shared source file had to be
+edited. The whole body is gated on `ODFS_PLATFORM_AMIX` /
+`ODFS_PLATFORM_AMIX_KERNEL`, so host and AmigaOS builds never see any of it.
+
+### Getting the kernel filesystem into a kernel
+
+`make amix-kernel` produces a relocatable object, not a loadable module: AMIX
+has no loadable filesystems. Two further steps are needed, and **neither
+happens in this repository**:
+
+1. a `cdfs` row in the kernel's static `vfssw[]` table, staged through
+   `fstypes.conf`, and
+2. a whole-kernel relink with `libcdfskern.o` in it.
+
+Both are done by `amix-kerntools`, which owns the `fstypes.conf` staging and the
+kernel-assembly harness.
+
+### Mounting
+
+With such a kernel booted and `build/amix/mount` installed as
+`/usr/lib/fs/cdfs/mount` (mode 755):
+
+```sh
+mkdir -p /cdrom
+mount -F cdfs 0,2 /cdrom     # SCSI card 0, target 2
+```
+
+The mount *special* is not a `/dev` path. It is `"<card><sep><unit>"`, where
+`<sep>` is any run of non-digit characters — `0,2`, `0.2` and `0:2` are the same
+thing — naming the SCSI host-adapter index and the target id. There is no `/dev`
+node because a real CD never traverses `/dev/dsk` on stock AMIX: `dd.c`
+hard-codes 512-byte blocks plus an RDB, and stock `gsio`'s `iobuf[1024]` is
+smaller than a single 2048-byte CD block. Addressing by `(card,unit)` sidesteps
+both.
+
+[platform/amix/README.md](platform/amix/README.md) covers the mount helper in
+full: why SVR4 cannot mount anything without it, what it writes to
+`/etc/mnttab` and why, and how to read the errno of a failed mount.
+
+### Known limits
+
+- Read-only, as on every other target.
+- **ISO 9660 with Rock Ridge** is the path proven end to end on real hardware
+  (A4000 + Z3660). High Sierra, Joliet, UDF, HFS, HFS+ and CDDA are compiled
+  into both AMIX arms but have not been exercised end to end there — see
+  [docs/amix-known-unknowns.md](docs/amix-known-unknowns.md).
+- The in-kernel SCSI backend caps every transfer at **one 2048-byte sector**.
+  Multi-sector requests came back as garbage on the bench HBA, so the backend
+  splits each read into single-block SCSI commands. Correct, but slower than the
+  hardware allows.
+- Neither AMIX arm is built in CI — no cross toolchain is available there. They
+  are validated out of band; see [docs/testing.md](docs/testing.md).
 
 ## Unit Tests
 
