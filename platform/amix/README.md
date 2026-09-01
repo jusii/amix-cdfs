@@ -6,6 +6,16 @@
 backends used by the cross-built tools, and the **SVR4 mount helper** that makes
 `mount -F cdfs` work at all.
 
+## What this sits on
+
+The kernel half is [`platform/amix-kernel/`](../amix-kernel/README.md) — the
+SVR4 vfsops/vnodeops vectors, the vnode cache, and the in-kernel SCSI media
+backend that DMAs sectors off the drive. Its README documents the four contracts
+that half has to keep (no `VFS_INIT`; a self-locating `cdfsinit`; page-aligned,
+non-page-crossing DMA targets; and never a `struct sdcom` on the kernel stack),
+the anti-mount-stacking guard this document's hazard note refers to, and the
+same errno table read from the kernel side.
+
 ## The mount helper — `/usr/lib/fs/cdfs/mount`
 
 **Source:** [`mount.c`](mount.c) · **Build:** `make amix-mount` · **Artifact:** `build/amix/mount`
@@ -144,6 +154,28 @@ rm -f /usr/lib/fs/cdfs/umount
 | 0 | mounted (possibly with an mnttab warning on stderr) |
 | 1 | `mount(2)` failed — message on stderr with the errno |
 | 2 | usage error (fewer than 2 operands) |
+
+### Reading the errno of a failed mount
+
+`mount(2)` returns an errno and nothing else, so the errno printed on status 1
+is the **entire** diagnosis. That is why `e0ef11a` exists: every failure used to
+arrive as errno 5, and an empty card slot, a drive that failed on the wire, a
+disc with no filesystem on it and a 512-byte-block device were one
+indistinguishable verdict — a merge that cost three separate investigations
+before the cause of one of them was found. Each verdict now has its own arm in
+`cdfs_errno()` ([`../amix-kernel/cdfs_node.c`](../amix-kernel/cdfs_node.c)):
+
+| errno | What it means | First thing to check |
+|---|---|---|
+| `ENXIO` | No controller is registered at that **card** index — the address names nothing at all. `sdopen()` said so, and a `cmn_err` on the console names the card and `sdopen`'s return | The card number. Routine, not exotic: the stock kernel unregisters the a3091 once memory exceeds 64 MB, so `1,3` can be a slot with no controller in it |
+| `ENOTTY` | The target answered INQUIRY but is **not** peripheral type 0x05 — the device is there, it is just not a CD drive. `ENODEV`/`ENXIO` would both read as "absent" and re-merge this with the case above; `ENOTTY` is produced **nowhere else in cdfs**, so it is an unambiguous fingerprint | The unit number: that target is a disk or a tape |
+| `EINVAL` | The disc read fine and no backend recognized a filesystem on it, or its shape is one this driver does not serve (a block size other than 2048, a capacity past READ CAPACITY(10)) — or the spec string did not parse as `<card><sep><unit>` | The disc first, then the spec |
+| `ENOMEM` | A kernel allocation failed | Kernel memory pressure |
+| `EIO` | **Only** "the device did not deliver readable data" — nothing else routes here any more | Cable, termination, media |
+| `EBUSY` | That drive is already mounted, or that directory already has a filesystem mounted on it. `cdfs` refuses to stack mounts; see the hazard note above | `mount` with no arguments |
+| `EROFS` | `MS_RDONLY` was not passed. This helper always passes it, so seeing this means something else called `mount(2)` | The caller |
+| `EPERM` | Not the superuser. `mount(2)` itself checks no privilege; every filesystem's `VFS_MOUNT` does | — |
+| `ENOTDIR` | The mount point is not a directory | — |
 
 ### Building
 
