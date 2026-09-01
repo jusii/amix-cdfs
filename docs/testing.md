@@ -11,6 +11,13 @@
 ### Unit Tests (`tests/unit/`)
 Test small deterministic components: endian helpers, path parsing, timestamps, directory record parsing, cache logic, logging, charset conversion.
 
+Two suites cover code that cannot otherwise be reached from the host:
+`test_remount.c` runs repeated in-process mount/unmount cycles over one image
+(the shape the AMIX remount corruption only ever appeared in), and
+`test_cdfs_blocks.c` covers the AMIX in-kernel `st_blocks` arithmetic, which is
+factored into `platform/amix-kernel/cdfs_blocks.h` for exactly that reason —
+`cdfs_vnodeops.c` itself needs SVR4 kernel headers and cannot be host-compiled.
+
 ### Golden Image Tests (`tests/golden/`)
 For each image, define expected: detected backend(s), volume name, root listing, file metadata, file hashes, timestamps.
 
@@ -55,5 +62,32 @@ test_handler CD0:some/deep/directory REL=///sibling
 test_handler CD0:CDDA/Track01.wav FILE=CD0:CDDA/Track01.wav
 ```
 
+The AMIX (SVR4/m68k) arms need the `gcc-cross-amix` toolchain
+(`m68k-cbm-sysv4-gcc`) and are **not built in CI**:
+
+```
+make amix         # libodfs.a + imginfo/imgls/imgcat + the SVR4 mount helper
+make amix-lib     # just build/amix/libodfs.a
+make amix-tools   # just the three img* tools
+make amix-mount   # just build/amix/mount, the /usr/lib/fs/cdfs/mount helper
+make amix-kernel  # build/amix-kernel/libcdfskern.o, the in-kernel filesystem
+```
+
+Pass `AMIX_CROSS_PREFIX=/path/to/amix-cross` if the toolchain is not under
+`/opt/amix-cross`. See the README's "Building for AMIX (SVR4/m68k)" chapter.
+
 ## CI Requirements
 Per push: build, unit tests, golden image tests, malformed-image tests, parser fuzz smoke tests, Amiga handler build, ROM-profile build, static checks, warnings-as-errors.
+
+Host baseline: `make check` is **22 suites, 111 tests, 0 failures** (measured
+2026-09-01 at `3c537a6`). Record the new number here whenever a suite is added,
+so drift is detectable rather than merely surprising.
+
+The five AMIX targets are outside CI — no `m68k-cbm-sysv4` cross toolchain is
+available to the workflow, which builds the host, Amiga and ROM arms only. The
+AMIX arms are validated out of band instead: cross-build, then a bench cycle on
+the emulated box, then metal (A4000 + Z3660) for anything that changes the
+mount, read or DMA path. What that has and has not covered is recorded in
+[amix-known-unknowns.md](amix-known-unknowns.md) — ISO 9660 with Rock Ridge is
+proven end to end there; High Sierra, Joliet, UDF, HFS, HFS+ and CDDA compile
+into both AMIX arms but have not been.
