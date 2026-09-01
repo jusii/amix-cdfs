@@ -10,6 +10,14 @@ and, once settled, how. A resolved entry is kept here (marked RESOLVED, with its
 evidence chain intact) rather than deleted: the record of *how* a mechanism was
 finally pinned down is worth as much as the answer.
 
+**Sibling repositories referenced below.** The AMIX port depends on two
+repositories that are not this one, and several commits and scripts cited here
+live in them rather than in the ODFileSystem tree: **`gcc-cross-amix`** (the
+`m68k-cbm-sysv4` cross toolchain — compiler, binutils, `libgcc`) and
+**`amix-kerntools`** (kernel assembly, the whole-kernel link, and the on-metal
+validation harness). Paths and hashes are qualified with the owning repository
+wherever they appear.
+
 ---
 
 ## 1. `__udivdi3` returned a wrong value in the kernel (2026-07-19, RESOLVED 2026-07-21)
@@ -72,8 +80,9 @@ inline-asm `udiv_qrnnd` path was never compiled in, because the libgcc build car
 no `-m68020`. So the fault lived in the helpers themselves, identically, wherever
 they were linked.
 
-**Fix:** gcc-cross-amix `984192a` — an assembler wrapper that rewrites the
-mis-encoded forms to `divsl.l` / `divul.l`; `libgcc.a` rebuilt 2026-07-21.
+**Fix:** commit `984192a` in the **`gcc-cross-amix`** toolchain repository (not
+this one) — an assembler wrapper that rewrites the mis-encoded forms to
+`divsl.l` / `divul.l`; `libgcc.a` rebuilt 2026-07-21.
 
 ### Before / after on the same machine
 
@@ -116,8 +125,10 @@ the identical fix. The assembler encoding did it.
 
 ### Full gate
 
-`tools/hw-ops/validate-metal.sh --expect-sum 00961 --cycles 5` = **PASS**: mount,
-byte-identical CD reads vs `test_rr.iso` host truth, DMA canary clean 5/5.
+**`amix-kerntools`**' `tools/hw-ops/validate-metal.sh --expect-sum 00961
+--cycles 5` = **PASS**: mount, byte-identical CD reads vs `test_rr.iso` host
+truth, DMA canary clean 5/5. (That script lives in `amix-kerntools`, which owns
+the metal harness — there is no `tools/hw-ops/` in this repository.)
 
 ### Hypotheses considered, and how each resolved
 
@@ -147,8 +158,9 @@ byte-identical CD reads vs `test_rr.iso` host truth, DMA canary clean 5/5.
 - **`/usr/sys/fs/libfsgcc.a` missing on the box.** A build-time staging artifact,
   never evidence — confirmed irrelevant.
 - **"No native userland control is possible."** This was the wrong constraint. A
-  **cross-compiled** exerciser from `gcc-cross-amix` (metal has only AT&T `cc` and no
-  `libgcc.a`) *was* the control — and it is what settled the entry.
+  **cross-compiled** exerciser built with the `gcc-cross-amix` toolchain (metal
+  has only AT&T `cc` and no `libgcc.a`) *was* the control — and it is what
+  settled the entry.
 
 ### Scope of the exposure (updated)
 
