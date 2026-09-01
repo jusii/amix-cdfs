@@ -296,7 +296,7 @@ AMIGAOS4_README      = docs/ODFileSystem_OS4.readme
 # ==================================================================
 
 .PHONY: all host amiga amiga-test amiga-020 adf rom rom-test lib tests tools fuzz
-.PHONY: amix amix-lib amix-tools amix-mount
+.PHONY: amix amix-lib amix-tools amix-mount amix-kernel
 .PHONY: check golden-check malformed-check fuzz-check integration-check
 .PHONY: clean size amigaos3-lha amigaos4-lha
 
@@ -631,7 +631,9 @@ endif
 # a bash wrapper that already bakes in --sysroot and the crt/libc link,
 # so no -sysroot flag is needed here.
 
-AMIX_CROSS_PREFIX ?= /home/jalanara/opt/amix-cross
+# Root of the gcc-cross-amix toolchain (m68k-cbm-sysv4). Override it if the
+# toolchain lives elsewhere:  make amix AMIX_CROSS_PREFIX=/path/to/amix-cross
+AMIX_CROSS_PREFIX ?= /opt/amix-cross
 AMIX_CC     ?= $(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-gcc
 # The cross binutils archiver (GNU ar 2.8.1) shipped with the toolchain
 # aborts with a glibc _FORTIFY_SOURCE "buffer overflow detected" on any
