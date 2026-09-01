@@ -2,10 +2,18 @@
 
 ## Layers
 
-### A. AmigaDOS Handler Frontend
-- Packet dispatch, mount lifecycle, locks, file handles
-- Translation from internal node model to AmigaDOS structures
-- Kept as small and policy-light as practical
+### A. Platform Frontends
+Each frontend owns one host operating system's object model and calls into the
+same core. All three are kept as small and policy-light as practical.
+
+- **AmigaDOS handler** (`platform/amiga/`) — packet dispatch, mount lifecycle,
+  locks, file handles; translation from the internal node model to AmigaDOS
+  structures. OS3 and OS4 variants.
+- **AMIX in-kernel SVR4 filesystem** (`platform/amix-kernel/`) — the `cdfs`
+  vfsops/vnodeops vectors, mount lifecycle, and a per-mount vnode cache that
+  gives the core's value-type nodes a kernel lifecycle.
+- **Host and AMIX tools** (`tools/`, cross-built by `make amix`) — `imginfo`,
+  `imgls`, `imgcat` over image files; no mount lifecycle of their own.
 
 ### B. Core Common Layer
 - Internal node model (`odfs_node_t`)
@@ -15,10 +23,34 @@
 - Configuration/profile support
 
 ### C. Device / Media Access Layer
-- Sector reads via `odfs_media_t` vtable
+- Sector reads via the `odfs_media_t` vtable (`odfs_media_ops_t`)
 - Media geometry, session/TOC discovery
 - Block size abstraction, retry policy
 - Isolates hardware from parser logic
+
+Implementations behind that one vtable:
+
+| Implementation | Transport |
+|---|---|
+| `platform/amiga/handler_main.c` | Exec device I/O (`scsi.device` and friends) |
+| `platform/host/file_media.c` | Host `stdio` over an image file |
+| `platform/amix/amix_file_media.c` | AMIX raw `open`/`lseek`/`read` over an image or a disk slice |
+| `platform/amix/amix_scsi_media.c` | AMIX userspace SCSI passthrough — the `/dev/scsi` GSIO ioctl |
+| `platform/amix-kernel/amix_kern_media.c` | AMIX in-kernel SCSI — fill a `struct sdcom`, `sdqueue()`, sleep for the completion interrupt |
+
+Two constraints the AMIX arms forced the seam to absorb, both of them
+platform-neutral improvements rather than special cases:
+
+- **DMA targets must be sector-aligned and must not cross a page.** A media
+  backend that DMAs receives a buffer the core allocated, so the guarantee has
+  to be made in the core (`odfs_malloc_aligned`), not per backend. The in-kernel
+  AMIX backend then enforces it: it refuses an out-of-contract request rather
+  than firing a wild DMA, and bounces an unaligned caller through an aligned
+  sector.
+- **No stdio and no libc on the kernel arm.** The seam is a plain vtable of
+  function pointers over `void *` context, with allocation routed through
+  `odfs_alloc.h`, so an implementation that has neither is expressible without
+  changing the interface.
 
 ### D. Parser Backends
 Pluggable readers implementing `odfs_backend_ops_t`:
