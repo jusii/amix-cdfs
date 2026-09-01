@@ -340,9 +340,9 @@ Supported control flags:
 - `UDF` to prefer UDF on bridge discs
 - `FILEBUFFERS` or `FB` to set the block-cache size
 
-See [mountlist.example](/Users/stepan/git/ODFileSystem/docs/mountlist.example)
+See [mountlist.example](docs/mountlist.example)
 for a fuller example with hardware notes, and
-[CD0](/Users/stepan/git/ODFileSystem/platform/amiga/dosdrivers/CD0) for the
+[CD0](platform/amiga/dosdrivers/CD0) for the
 packaged DOSDriver entry used with Workbench.
 
 ## Unit Tests
@@ -353,7 +353,7 @@ Unit tests are host-side tests under `tests/unit/`. Run them with:
 make check
 ```
 
-This builds the host library and the unit-test binaries, then runs all suites. In this workspace, `make check` completes successfully.
+This builds the host library and the unit-test binaries, then runs all suites.
 
 The repository also contains image-based golden tests in `tests/golden/`, but the unit-test entry point is `make check`.
 
@@ -361,4 +361,4 @@ The repository also contains image-based golden tests in `tests/golden/`, but th
 
 ## License
 
-ODFileSystem is licensed under the BSD 2-Clause license. See [LICENSE](/Users/stepan/git/xcdfs/LICENSE) for the full text.
+ODFileSystem is licensed under the BSD 2-Clause license. See [LICENSE](LICENSE) for the full text.
