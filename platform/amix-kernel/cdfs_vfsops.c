@@ -24,6 +24,7 @@
 
 #include "cdfs.h"
 #include "amix_kern_media.h"   /* odfs_kern_media_open_scsi() */
+#include "odfs/arith.h"
 
 #include <sys/errno.h>
 #include <sys/statvfs.h>
@@ -426,7 +427,7 @@ static int cdfs_vget(struct vfs *vfsp, struct vnode **vpp, struct fid *fidp)
     struct cdfs_fid *cfid = (struct cdfs_fid *)fidp;
     struct cdfsnode *cnp;
     uint32_t         lba = cfid->cfid_lba;
-    unsigned int     h = (unsigned int)(lba % (uint32_t)CDFS_NHASH);
+    unsigned int     h = (unsigned int)odfs_umod32(lba, CDFS_NHASH);
 
     for (cnp = cvfs->hash[h]; cnp != 0; cnp = cnp->hash_next) {
         if (cnp->node.extent.lba == lba) {

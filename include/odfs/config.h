@@ -179,6 +179,13 @@
   #ifndef ODFS_PLATFORM_HOST
     #define ODFS_PLATFORM_HOST 0
   #endif
+  /*
+   * The kernel may run on a 68060, which traps 32x32->64 multiplies and
+   * has no emulation package in kernel mode; see odfs/arith.h.
+   */
+  #ifndef ODFS_NO_MUL64
+    #define ODFS_NO_MUL64 1
+  #endif
 #endif
 
 /* host builds for testing */

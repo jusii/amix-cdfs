@@ -12,6 +12,7 @@
 
 #include "hfs.h"
 #include "odfs/alloc.h"
+#include "odfs/arith.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
 #include "odfs/log.h"
@@ -47,23 +48,25 @@ static void hfs_parse_mac_date(uint32_t mac_secs, odfs_timestamp_t *ts)
     unix_secs = mac_secs - HFS_MAC_EPOCH_DIFF;
     /* Amiga epoch is 1978, but we store in our timestamp struct which
        has a year field. Use a simple days-from-epoch conversion. */
-    days = unix_secs / 86400;
-    rem = unix_secs % 86400;
-    ts->hour = rem / 3600;
-    ts->minute = (rem % 3600) / 60;
-    ts->second = rem % 60;
+    days = odfs_udiv32(unix_secs, 86400);
+    rem = odfs_umod32(unix_secs, 86400);
+    ts->hour = odfs_udiv32(rem, 3600);
+    ts->minute = odfs_udiv32(odfs_umod32(rem, 3600), 60);
+    ts->second = odfs_umod32(rem, 60);
 
     /* year/month/day from days since 1970-01-01 */
     y = 1970;
     while (1) {
-        int yd = 365 + ((y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0);
+        int yd = 365 + ((y % 4 == 0 && (odfs_smod32(y, 100) != 0 ||
+                                        odfs_smod32(y, 400) == 0)) ? 1 : 0);
         if (days < (uint32_t)yd) break;
         days -= yd;
         y++;
     }
     ts->year = y;
 
-    leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
+    leap = (y % 4 == 0 && (odfs_smod32(y, 100) != 0 ||
+                           odfs_smod32(y, 400) == 0)) ? 1 : 0;
     for (m = 0; m < 12; m++) {
         int md = mdays[m] + (m == 1 ? leap : 0);
         if (days < (uint32_t)md) break;
@@ -76,7 +79,7 @@ static void hfs_parse_mac_date(uint32_t mac_secs, odfs_timestamp_t *ts)
 /* convert allocation block number to physical byte offset */
 static uint64_t hfs_ab_to_byte(const hfs_context_t *ctx, uint16_t ab)
 {
-    uint64_t block_512 = (uint64_t)ab * (ctx->alloc_block_size / 512)
+    uint64_t block_512 = odfs_umul64(ab, ctx->alloc_block_size / 512)
                          + ctx->alloc_block_start
                          + ctx->vol_start_512;
     return block_512 * 512;
@@ -89,13 +92,13 @@ static odfs_err_t hfs_read_node(const hfs_context_t *ctx,
                                   uint8_t *buf)
 {
     /* calculate byte offset of node within catalog file */
-    uint64_t node_byte_offset = (uint64_t)node_num * ctx->cat_node_size;
+    uint64_t node_byte_offset = odfs_umul64(node_num, ctx->cat_node_size);
 
     /* find which extent contains this offset */
     uint64_t extent_offset = 0;
     int i;
     for (i = 0; i < 3; i++) {
-        uint64_t ext_bytes = (uint64_t)ctx->cat_extents[i].num_ab * ctx->alloc_block_size;
+        uint64_t ext_bytes = odfs_umul64(ctx->cat_extents[i].num_ab, ctx->alloc_block_size);
         if (node_byte_offset < extent_offset + ext_bytes) {
             uint64_t off_in_ext = node_byte_offset - extent_offset;
             uint64_t phys = hfs_ab_to_byte(ctx, ctx->cat_extents[i].start_ab) + off_in_ext;
@@ -911,7 +914,7 @@ static odfs_err_t hfs_get_volume_name(void *backend_ctx,
 static uint32_t hfs_get_volume_size(void *backend_ctx)
 {
     hfs_context_t *ctx = backend_ctx;
-    uint64_t bytes = (uint64_t)ctx->num_alloc_blocks * ctx->alloc_block_size;
+    uint64_t bytes = odfs_umul64(ctx->num_alloc_blocks, ctx->alloc_block_size);
     uint64_t blocks = (bytes + 2047u) / 2048u;
 
     return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;

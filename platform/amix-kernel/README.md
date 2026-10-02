@@ -250,6 +250,35 @@ into that same routine. `cdfs` has no `memmove` call site of its own, but
 binding to it was binding to a body that silently corrupts on destructive
 overlap.
 
+## No 32x32->64 multiply in the object — it must run on a 68060
+
+The 68060 does not implement `MULU.L`/`MULS.L <ea>,Dh:Dl` (32x32->64) or
+`DIVU.L`/`DIVS.L <ea>,Dr:Dq` (64/32); they trap to vector 61, and in kernel
+mode nothing emulates them. gcc 2.7.2.3 has no `-m68060`, and with `-m68020`
+or `-m68040` it emits the 64-bit multiply on its own for two idioms: a 32-bit
+division or modulo by a **constant** (multiply by the reciprocal, keep the high
+word) and `(uint64_t)a * b` with two 32-bit operands.
+
+So the kernel arm defines `ODFS_NO_MUL64` (`include/odfs/config.h`), and the
+portable code writes those idioms through [`odfs/arith.h`](../../include/odfs/arith.h):
+`odfs_udiv32`/`odfs_umod32`/`odfs_sdiv32`/`odfs_smod32`/`odfs_udivsz` hide the
+divisor from the optimizer so a plain 32-bit `DIVU.L`/`DIVS.L` is emitted, and
+`odfs_umul64` builds the product from 16x16 partials. Without the knob every
+helper is a macro for the open-coded operator, so the AmigaOS, host and AMIX
+userspace builds compile to the same code as before. Power-of-two divisors need
+none of this: they are shifts.
+
+The check is a disassembly scan of the object for the trapping encodings, which
+must find **zero** candidates:
+
+```sh
+m68k-cbm-sysv4-objdump -d build/amix-kernel/libcdfskern.o > cdfs.lst
+scan060.py cdfs.lst            # amix-040-060-port test-tools/scan060.py
+```
+
+A new division by a constant or a widening multiply in code that reaches the
+kernel object brings a candidate back; route it through `odfs/arith.h`.
+
 ## Known limits
 
 - **Read-only**, by construction. `vfs_mountroot` returns `EROFS` and

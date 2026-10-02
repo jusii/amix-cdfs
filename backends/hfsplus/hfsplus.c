@@ -12,6 +12,7 @@
 
 #include "hfsplus.h"
 #include "odfs/alloc.h"
+#include "odfs/arith.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
 #include "odfs/namefix.h"
@@ -43,21 +44,23 @@ static void hfsp_parse_date(uint32_t mac_secs, odfs_timestamp_t *ts)
     if (mac_secs < HFSP_MAC_EPOCH)
         return;
     unix_secs = mac_secs - HFSP_MAC_EPOCH;
-    days = unix_secs / 86400;
-    rem = unix_secs % 86400;
-    ts->hour = rem / 3600;
-    ts->minute = (rem % 3600) / 60;
-    ts->second = rem % 60;
+    days = odfs_udiv32(unix_secs, 86400);
+    rem = odfs_umod32(unix_secs, 86400);
+    ts->hour = odfs_udiv32(rem, 3600);
+    ts->minute = odfs_udiv32(odfs_umod32(rem, 3600), 60);
+    ts->second = odfs_umod32(rem, 60);
 
     y = 1970;
     while (1) {
-        int yd = 365 + ((y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0);
+        int yd = 365 + ((y % 4 == 0 && (odfs_smod32(y, 100) != 0 ||
+                                        odfs_smod32(y, 400) == 0)) ? 1 : 0);
         if (days < (uint32_t)yd) break;
         days -= yd;
         y++;
     }
     ts->year = y;
-    leap = (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 1 : 0;
+    leap = (y % 4 == 0 && (odfs_smod32(y, 100) != 0 ||
+                           odfs_smod32(y, 400) == 0)) ? 1 : 0;
     for (m = 0; m < 12; m++) {
         int md = mdays[m] + (m == 1 ? leap : 0);
         if (days < (uint32_t)md) break;
@@ -84,7 +87,7 @@ static void hfsp_parse_fork(const uint8_t *p, hfsp_fork_t *f)
 /* convert allocation block to byte offset in image */
 static uint64_t hfsp_block_to_byte(const hfsplus_context_t *ctx, uint32_t block)
 {
-    return ctx->vol_offset + (uint64_t)block * ctx->block_size;
+    return ctx->vol_offset + odfs_umul64(block, ctx->block_size);
 }
 
 /* read bytes from a fork at a given byte offset within the fork */
@@ -99,7 +102,7 @@ static odfs_err_t hfsp_read_fork(const hfsplus_context_t *ctx,
     int i;
 
     for (i = 0; i < 8 && done < len; i++) {
-        uint64_t ext_bytes = (uint64_t)fork->extents[i].block_count * ctx->block_size;
+        uint64_t ext_bytes = odfs_umul64(fork->extents[i].block_count, ctx->block_size);
         if (ext_bytes == 0) break;
 
         if (offset < ext_offset + ext_bytes) {
@@ -138,7 +141,7 @@ static odfs_err_t hfsp_read_node(const hfsplus_context_t *ctx,
                                    uint32_t node_num,
                                    uint8_t *buf)
 {
-    uint64_t offset = (uint64_t)node_num * ctx->cat_node_size;
+    uint64_t offset = odfs_umul64(node_num, ctx->cat_node_size);
     return hfsp_read_fork(ctx, cache, &ctx->cat_fork, offset,
                           buf, ctx->cat_node_size);
 }
@@ -199,7 +202,7 @@ static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
      *    (handles GPT/APM partitioned images)
      */
     const uint8_t *sector;
-    uint64_t base = (uint64_t)session_start * 2048;
+    uint64_t base = odfs_umul64(session_start, 2048);
     uint32_t lba;
     int off;
 
@@ -220,7 +223,7 @@ static odfs_err_t hfsp_find_vh(odfs_cache_t *cache,
             uint16_t sig = hfsp_be16(&sector[off]);
             if (sig == HFSPLUS_SIG || sig == HFSX_SIG) {
                 /* VH is at this offset; volume start is 1024 before it */
-                uint64_t vh_byte = (uint64_t)lba * 2048 + off;
+                uint64_t vh_byte = odfs_umul64(lba, 2048) + off;
                 *vh_offset_out = vh_byte;
                 return ODFS_OK;
             }
@@ -983,7 +986,7 @@ static odfs_err_t hfsp_get_volume_name(void *backend_ctx,
 static uint32_t hfsp_get_volume_size(void *backend_ctx)
 {
     hfsplus_context_t *ctx = backend_ctx;
-    uint64_t bytes = (uint64_t)ctx->total_blocks * ctx->block_size;
+    uint64_t bytes = odfs_umul64(ctx->total_blocks, ctx->block_size);
     uint64_t blocks = (bytes + 2047u) / 2048u;
 
     return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;

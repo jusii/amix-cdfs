@@ -9,6 +9,7 @@
 
 #include "udf.h"
 #include "odfs/alloc.h"
+#include "odfs/arith.h"
 #include "odfs/cache.h"
 #include "odfs/charset.h"
 #include "odfs/namefix.h"
@@ -1366,7 +1367,7 @@ static uint32_t udf_get_volume_size(void *backend_ctx)
 {
     udf_context_t *ctx = backend_ctx;
     uint32_t block_size = ctx->lv_block_size ? ctx->lv_block_size : 2048;
-    uint64_t bytes = (uint64_t)ctx->part_length * block_size;
+    uint64_t bytes = odfs_umul64(ctx->part_length, block_size);
     uint64_t blocks = (bytes + 2047u) / 2048u;
 
     return blocks > UINT32_MAX ? UINT32_MAX : (uint32_t)blocks;

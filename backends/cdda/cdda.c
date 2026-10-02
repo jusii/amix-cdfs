@@ -17,6 +17,7 @@
 
 #include "cdda.h"
 #include "odfs/alloc.h"
+#include "odfs/arith.h"
 #include "odfs/cache.h"
 #include "odfs/log.h"
 #include "odfs/error.h"
@@ -78,8 +79,8 @@ static uint32_t cdda_sum_digits(uint32_t value)
     uint32_t sum = 0;
 
     do {
-        sum += value % 10u;
-        value /= 10u;
+        sum += odfs_umod32(value, 10u);
+        value = odfs_udiv32(value, 10u);
     } while (value != 0);
 
     return sum;
@@ -102,8 +103,8 @@ static uint32_t cdda_total_seconds(const cdda_context_t *ctx)
     first_frames = cdda_track_offset_frames(&ctx->tracks[0]);
     last = &ctx->tracks[ctx->track_count - 1];
     leadout_frames = cdda_track_offset_frames(last) + last->length_frames;
-    return (leadout_frames / CDDA_FRAMES_PER_SEC) -
-           (first_frames / CDDA_FRAMES_PER_SEC);
+    return odfs_udiv32(leadout_frames, CDDA_FRAMES_PER_SEC) -
+           odfs_udiv32(first_frames, CDDA_FRAMES_PER_SEC);
 }
 
 static uint32_t cdda_disc_id(const cdda_context_t *ctx)
@@ -112,10 +113,10 @@ static uint32_t cdda_disc_id(const cdda_context_t *ctx)
     int i;
 
     for (i = 0; i < ctx->track_count; i++)
-        sum += cdda_sum_digits(cdda_track_offset_frames(&ctx->tracks[i]) /
-                               CDDA_FRAMES_PER_SEC);
+        sum += cdda_sum_digits(odfs_udiv32(
+            cdda_track_offset_frames(&ctx->tracks[i]), CDDA_FRAMES_PER_SEC));
 
-    return ((sum % 255u) << 24) |
+    return (odfs_umod32(sum, 255u) << 24) |
            (cdda_total_seconds(ctx) << 8) |
            (uint32_t)ctx->track_count;
 }
@@ -420,7 +421,7 @@ static void cdda_generate_cdtext(cdda_context_t *ctx)
     if (err != ODFS_OK || !raw || raw_size <= 4)
         return;
 
-    pack_count = (raw_size - 4u) / 18u;
+    pack_count = odfs_udivsz(raw_size - 4u, 18u);
     if (pack_count == 0) {
         odfs_free(raw);
         return;
@@ -677,8 +678,8 @@ static void cdda_track_name(int track_num,
     buf[len++] = 'a';
     buf[len++] = 'c';
     buf[len++] = 'k';
-    buf[len++] = '0' + (track_num / 10);
-    buf[len++] = '0' + (track_num % 10);
+    buf[len++] = '0' + odfs_sdiv32(track_num, 10);
+    buf[len++] = '0' + odfs_smod32(track_num, 10);
     buf[len++] = '.';
     while (*ext)
         buf[len++] = *ext++;
@@ -763,7 +764,7 @@ odfs_err_t cdda_mount_from_toc(const odfs_toc_t *toc,
         ctx->tracks[audio_count].number = toc->sessions[i].number;
         ctx->tracks[audio_count].start_lba = start;
         ctx->tracks[audio_count].length_frames = length;
-        ctx->tracks[audio_count].data_size = (uint64_t)length * CDDA_FRAME_SIZE;
+        ctx->tracks[audio_count].data_size = odfs_umul64(length, CDDA_FRAME_SIZE);
         ctx->tracks[audio_count].file_size = ctx->tracks[audio_count].data_size
                                              + header_size;
         audio_count++;
@@ -1000,8 +1001,8 @@ static odfs_err_t cdda_read(void *backend_ctx,
             return ODFS_ERR_RANGE;
         }
         audio_pos = (uint32_t)audio_pos64;
-        frame_num = audio_pos / CDDA_FRAME_SIZE;
-        frame_off = audio_pos % CDDA_FRAME_SIZE;
+        frame_num = odfs_udiv32(audio_pos, CDDA_FRAME_SIZE);
+        frame_off = odfs_umod32(audio_pos, CDDA_FRAME_SIZE);
         start_frame = trk->start_lba + frame_num;
 
         if (!ctx->media || !ctx->media->ops->read_audio) {

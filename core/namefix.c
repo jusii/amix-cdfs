@@ -7,6 +7,7 @@
 #include "odfs/namefix.h"
 
 #include "odfs/alloc.h"
+#include "odfs/arith.h"
 #include "odfs/node.h"
 #include "odfs/string.h"
 
@@ -151,8 +152,8 @@ odfs_err_t odfs_namefix_apply(odfs_namefix_state_t *state,
         size_t base_len = strlen(base);
 
         do {
-            digits[nd++] = (char)('0' + v % 10u);
-            v /= 10u;
+            digits[nd++] = (char)('0' + odfs_umod32(v, 10u));
+            v = odfs_udiv32(v, 10u);
         } while (v != 0 && nd < sizeof(digits));
         suffix[suffix_len++] = '~';
         while (nd > 0)

@@ -6,6 +6,7 @@
 
 #include "odfs/cache.h"
 #include "odfs/alloc.h"
+#include "odfs/arith.h"
 #include <string.h>
 
 #define ODFS_CACHE_STREAM_MIN_SECTORS 2u
@@ -194,7 +195,7 @@ odfs_err_t odfs_cache_init(odfs_cache_t *cache,
 
     entries_bytes = (size_t)capacity * sizeof(odfs_cache_entry_t);
     next_bytes = (size_t)capacity * sizeof(cache->next[0]);
-    if (entries_bytes / sizeof(odfs_cache_entry_t) != capacity ||
+    if (odfs_udivsz(entries_bytes, sizeof(odfs_cache_entry_t)) != capacity ||
         next_bytes / sizeof(cache->next[0]) != capacity)
         return ODFS_ERR_OVERFLOW;
 

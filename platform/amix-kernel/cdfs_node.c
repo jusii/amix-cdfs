@@ -20,6 +20,7 @@
 #if defined(ODFS_PLATFORM_AMIX_KERNEL)
 
 #include "cdfs.h"
+#include "odfs/arith.h"
 
 #include <sys/kmem.h>    /* kmem_alloc/kmem_zalloc/kmem_free, KM_SLEEP */
 #include <sys/errno.h>   /* ENOMEM, EIO, ... */
@@ -28,7 +29,7 @@
 /* Bucket for a node identity. extent.lba is the on-disc block address. */
 static unsigned int cdfs_hash(uint32_t lba)
 {
-    return (unsigned int)(lba % (uint32_t)CDFS_NHASH);
+    return (unsigned int)odfs_umod32(lba, CDFS_NHASH);
 }
 
 vtype_t cdfs_vtype(odfs_node_kind_t kind)
@@ -58,10 +59,10 @@ static long cdfs_days_from_civil(long y, unsigned int m, unsigned int d)
     unsigned int doe;
 
     y -= (m <= 2);
-    era = (y >= 0 ? y : y - 399) / 400;
+    era = odfs_sdiv32(y >= 0 ? y : y - 399, 400);
     yoe = (unsigned int)(y - era * 400);
-    doy = (153u * (m + (m > 2 ? -3u : 9u)) + 2u) / 5u + d - 1u;
-    doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+    doy = odfs_udiv32(153u * (m + (m > 2 ? -3u : 9u)) + 2u, 5u) + d - 1u;
+    doe = yoe * 365u + yoe / 4u - odfs_udiv32(yoe, 100u) + doy;
     return era * 146097L + (long)doe - 719468L;
 }
 
