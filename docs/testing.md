@@ -11,12 +11,16 @@
 ### Unit Tests (`tests/unit/`)
 Test small deterministic components: endian helpers, path parsing, timestamps, directory record parsing, cache logic, logging, charset conversion.
 
-Two suites cover code that cannot otherwise be reached from the host:
+Three suites cover code that cannot otherwise be reached from the host:
 `test_remount.c` runs repeated in-process mount/unmount cycles over one image
 (the shape the AMIX remount corruption only ever appeared in), and
 `test_cdfs_blocks.c` covers the AMIX in-kernel `st_blocks` arithmetic, which is
 factored into `platform/amix-kernel/cdfs_blocks.h` for exactly that reason —
 `cdfs_vnodeops.c` itself needs SVR4 kernel headers and cannot be host-compiled.
+`test_read_span.c` models the in-kernel read path (cdfs_read's 8 KiB staging
+loop over a media mock with the AMIX one-sector transfers and page bounce) and
+checks that reads around offset 4096 are never short before EOF, at a 2048 and
+a 4096 runtime page.
 
 ### Golden Image Tests (`tests/golden/`)
 For each image, define expected: detected backend(s), volume name, root listing, file metadata, file hashes, timestamps.
@@ -79,8 +83,8 @@ Pass `AMIX_CROSS_PREFIX=/path/to/amix-cross` if the toolchain is not under
 ## CI Requirements
 Per push: build, unit tests, golden image tests, malformed-image tests, parser fuzz smoke tests, Amiga handler build, ROM-profile build, static checks, warnings-as-errors.
 
-Host baseline: `make check` is **22 suites, 111 tests, 0 failures** (measured
-2026-09-01 at `3c537a6`). Record the new number here whenever a suite is added,
+Host baseline: `make check` is **24 suites, 121 tests, 0 failures** (measured
+2026-10-02 with `test_read_span.c` added). Record the new number here whenever a suite is added,
 so drift is detectable rather than merely surprising.
 
 The five AMIX targets are outside CI — no `m68k-cbm-sysv4` cross toolchain is

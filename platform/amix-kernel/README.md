@@ -144,6 +144,14 @@ Two halves, and both are needed:
   mount, because the submit sleep is a reschedule point and concurrent readers
   of one mount must not share one.
 
+**On 4 KiB-page kernels the same object stays correct.** `NBPP` comes from the
+stock headers, so the object enforces the rule at 2048 bytes even where the
+68040/68060 kernels run 4096-byte pages. That is stricter, never weaker: a
+2048-aligned 2048-byte transfer always sits inside one 4096-byte page, so
+one object serves both kernel lines. Nothing else in the read path depends on
+the page size. A read returns min(request, size - offset) bytes, never fewer.
+`tests/unit/test_read_span.c` checks both at a 2048 and a 4096 runtime page.
+
 ### 4. A `struct sdcom` handed to `sdqueue()` must never live on the kernel stack — `9360542`
 
 On AMIX the kernel stack lives in the **per-process u-area window** — a fixed
@@ -299,7 +307,7 @@ kernel object brings a candidate back; route it through `odfs/arith.h`.
 - **`vfs_vget` resolves only currently-cached nodes.** Stateless handle
   synthesis for NFS export is out of scope.
 - **Not built in CI** — no cross toolchain is available there. See
-  [`docs/testing.md`](../../docs/testing.md). The one piece that *is* covered by
-  `make check` on the host is `cdfs_blocks.h`, which was factored out of
-  `cdfs_vnodeops.c` precisely so its arithmetic could be tested off-metal
-  (`tests/unit/test_cdfs_blocks.c`).
+  [`docs/testing.md`](../../docs/testing.md). On the host, `make check` covers
+  `cdfs_blocks.h`, which was factored out of `cdfs_vnodeops.c` precisely so its
+  arithmetic could be tested off-metal (`tests/unit/test_cdfs_blocks.c`), and a
+  model of the read path (`tests/unit/test_read_span.c`).
