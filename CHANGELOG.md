@@ -1,3 +1,11 @@
+## 2026-10-02 — the AMIX kernel object carries no 68060-trapping 64-bit multiplies (b383d14)
+
+include/odfs/arith.h provides odfs_udiv32/umod32/sdiv32/smod32/udivsz/umul64, switched on by ODFS_NO_MUL64,
+which only the ODFS_PLATFORM_AMIX_KERNEL arm sets; used at every site that produced a mulul/mulsl candidate
+(cdda, hfs, hfsplus, udf, namefix, cache_block, the amix-kernel glue). scan060 on libcdfskern.o 40 -> 0
+(md5 673cd9f4 -> 83955331); AmigaOS, host and AMIX userspace builds unchanged; new unit test test_arith;
+host 116/116, golden 51/51, malformed 36/36.
+
 ## 2026-09-01 — docs: the AMIX port documented at the front door (063dc1d, 72ba3d1, 6514e3b, b6ca4fa, 4f3bb51, 81c8721, 446ec77, 1c4779a)
 
 README gains a "Building for AMIX (SVR4/m68k)" chapter (two build arms, the GCC 2.7.2.3
