@@ -1,3 +1,8 @@
+## 2026-10-03 — CD-07: reads spanning 4 KiB are never short before EOF (db71e18..1403437)
+
+Regression test for the ftpd truncation finding: a read spanning a 4 KiB boundary returns the full count until EOF,
+clearing cdfs as the cause.
+
 ## 2026-10-02 — the AMIX kernel object carries no 68060-trapping 64-bit multiplies (b383d14)
 
 include/odfs/arith.h provides odfs_udiv32/umod32/sdiv32/smod32/udivsz/umul64, switched on by ODFS_NO_MUL64,
