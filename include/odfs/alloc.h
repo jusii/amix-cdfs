@@ -29,11 +29,12 @@
  * the original length. So odfs_malloc/odfs_calloc over-allocate an aligned
  * size_t header, stash the total (header + payload) length there, and hand
  * back the payload pointer; odfs_free reads the length back for kmem_free.
- * KM_SLEEP: the filesystem runs in process context, so blocking to obtain
- * memory is allowed.
+ * KM_SLEEP for pool-sized requests: the filesystem runs in process context,
+ * so blocking to obtain memory is allowed. KM_NOSLEEP for oversize ones
+ * (see ODFS_KMEM_FLAGS below).
  */
 #include <sys/types.h>   /* size_t + _VOID, needed by <sys/kmem.h> */
-#include <sys/kmem.h>    /* kmem_alloc/kmem_zalloc/kmem_free, KM_SLEEP */
+#include <sys/kmem.h>    /* kmem_alloc/kmem_zalloc/kmem_free, KM_[NO]SLEEP */
 
 /*
  * Header size: one size_t, rounded up to 8-byte alignment so the returned
@@ -41,6 +42,19 @@
  * hands back at least word-aligned memory, so base + 8 stays 8-aligned.
  */
 #define ODFS_KMEM_HDR ((size_t)8)
+
+/*
+ * Stock SVR4 kmem serves a request over 4096 bytes (MAXABIG) as "oversize":
+ * sptalloc() of that many contiguous kernel-VA pages. When no such run is
+ * free, KM_SLEEP sleeps at PZERO on Km_OsizeWanted until somebody frees an
+ * oversize block at least as large, which may never happen: the caller
+ * hangs unkillably (docs/amix-kmem-oversize.md). Ask for oversize blocks
+ * with KM_NOSLEEP so they fail instead; every caller turns NULL into
+ * ODFS_ERR_NOMEM.
+ */
+#define ODFS_KMEM_MAXABIG ((size_t)4096)
+#define ODFS_KMEM_FLAGS(total) \
+    ((total) > ODFS_KMEM_MAXABIG ? KM_NOSLEEP : KM_SLEEP)
 
 static inline void *odfs_malloc(size_t size)
 {
@@ -50,7 +64,7 @@ static inline void *odfs_malloc(size_t size)
     if (size == 0)
         size = 1;
     total = size + ODFS_KMEM_HDR;
-    base = (char *)kmem_alloc(total, KM_SLEEP);
+    base = (char *)kmem_alloc(total, ODFS_KMEM_FLAGS(total));
     if (base == 0)
         return 0;
     *(size_t *)base = total;
@@ -70,7 +84,7 @@ static inline void *odfs_calloc(size_t count, size_t size)
         total = 1;
     total += ODFS_KMEM_HDR;
 
-    base = (char *)kmem_zalloc(total, KM_SLEEP);
+    base = (char *)kmem_zalloc(total, ODFS_KMEM_FLAGS(total));
     if (base == 0)
         return 0;
     *(size_t *)base = total;

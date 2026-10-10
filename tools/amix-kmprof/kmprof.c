@@ -13,8 +13,10 @@
  *   cc -std=gnu11 -O1 -I include -I backends -o /tmp/kmprof \
  *      tools/amix-kmprof/kmprof.c $(find core backends -name '*.c') \
  *      platform/host/file_media.c -Wl,--wrap=malloc,--wrap=calloc,--wrap=free
- *   /tmp/kmprof image.iso 8
+ *   /tmp/kmprof image.iso 8 32
  *
+ * The optional third argument is the mount's cache_blocks (0 or absent =
+ * the core default, 128); the kernel cdfs_mount passes CDFS_CACHE_BLOCKS.
  * Exit status is nonzero if any allocation is still live after the last
  * unmount. Meta-dir blob sizes are reported with the m68k struct sizes
  * (odfs_meta_dir_t 40, odfs_meta_entry_t 72).
@@ -189,12 +191,16 @@ static void walk(const odfs_node_t *dir, int depth)
 int main(int argc, char **argv)
 {
     int cycles, c;
+    odfs_mount_opts_t opts;
 
     if (argc < 2) {
-        fprintf(stderr, "usage: %s image [cycles]\n", argv[0]);
+        fprintf(stderr, "usage: %s image [cycles [cache_blocks]]\n",
+                argv[0]);
         return 2;
     }
     cycles = argc > 2 ? atoi(argv[2]) : 8;
+    odfs_mount_opts_default(&opts);
+    opts.cache_blocks = argc > 3 ? (uint32_t)atoi(argv[3]) : 0;
     M = __real_calloc(1, sizeof(*M));
 
     for (c = 1; c <= cycles; c++) {
@@ -202,7 +208,7 @@ int main(int argc, char **argv)
 
         tracking = 1;
         if (odfs_media_open_image(argv[1], &media) != ODFS_OK ||
-            odfs_mount(&media, NULL, NULL, M) != ODFS_OK) {
+            odfs_mount(&media, &opts, NULL, M) != ODFS_OK) {
             fprintf(stderr, "open/mount failed\n");
             return 2;
         }

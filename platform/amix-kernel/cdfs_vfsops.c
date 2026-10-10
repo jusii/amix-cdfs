@@ -29,7 +29,7 @@
 #include <sys/errno.h>
 #include <sys/statvfs.h>
 #include <sys/cred.h>
-#include <sys/kmem.h>          /* kmem_zalloc/kmem_free, KM_SLEEP */
+#include <sys/kmem.h>          /* kmem_zalloc/kmem_free, KM_NOSLEEP */
 #include <sys/mount.h>         /* MS_RDONLY — the mount(2) flag bits */
 #include <sys/sysmacros.h>     /* makedevice(), L_MAXMAJ/L_MAXMIN */
 #include <string.h>            /* memset, strncpy */
@@ -167,6 +167,18 @@ static dev_t cdfs_makedev(unsigned int card, unsigned int unit)
 
 /* ---- vfs ops (positional, matching <sys/vfs.h> struct vfsops) -------- */
 
+/*
+ * Block-cache size per mount. The core default (ODFS_BLOCK_CACHE_SIZE, 128)
+ * makes the slab one 264 204-byte kmem request = 65 contiguous 4 KiB sptmap
+ * pages, which a fragmented sptmap cannot always supply (stock kmem then
+ * sleeps forever on Km_OsizeWanted). 32 blocks = 67 596 bytes = 17 pages and
+ * keeps read-ahead (it needs >= 32). File reads bypass the block cache for
+ * whole aligned sectors, so the smaller cache costs little. If even the slab
+ * fails, odfs_cache_init falls back to one aligned buffer per entry (32 x 2
+ * pages, non-contiguous). See docs/amix-kmem-oversize.md.
+ */
+#define CDFS_CACHE_BLOCKS 32U
+
 /* 1: vfs_mount(vfsp, mvp, uap, cr) */
 static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
                       struct mounta *uap, cred_t *cr)
@@ -178,6 +190,7 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     struct cdfs_vfs *cvfs;
     struct vnode    *rvp;
     odfs_media_t     media;
+    odfs_mount_opts_t opts;
     odfs_err_t       oe;
     dev_t            dev;
     int              e;
@@ -261,7 +274,9 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
     if (vfs_devsearch(dev) != 0)
         return EBUSY;
 
-    cvfs = (struct cdfs_vfs *)kmem_zalloc(sizeof(*cvfs), KM_SLEEP);
+    /* sizeof(*cvfs) is over 4096 bytes, a kmem oversize request: fail with
+     * ENOMEM rather than sleep forever on Km_OsizeWanted (see odfs/alloc.h). */
+    cvfs = (struct cdfs_vfs *)kmem_zalloc(sizeof(*cvfs), KM_NOSLEEP);
     if (cvfs == 0)
         return ENOMEM;
     cvfs->card = card;
@@ -273,8 +288,9 @@ static int cdfs_mount(struct vfs *vfsp, struct vnode *mvp,
         return cdfs_errno(oe);
     }
 
-    oe = odfs_mount(&media, (const odfs_mount_opts_t *)0,
-                    (odfs_log_state_t *)0, &cvfs->mnt);
+    odfs_mount_opts_default(&opts);
+    opts.cache_blocks = CDFS_CACHE_BLOCKS;
+    oe = odfs_mount(&media, &opts, (odfs_log_state_t *)0, &cvfs->mnt);
     if (oe != ODFS_OK) {
         odfs_media_close(&media);   /* odfs_mount does not close on failure */
         kmem_free((void *)cvfs, sizeof(*cvfs));

@@ -147,6 +147,21 @@ The recommendation for 1.0 is **1 + 2**. Together they are about 15 lines in
 that, the worst case is an `ENOMEM` from `mount`, not a mount table wedged
 until reboot.
 
+### Applied (2026-10-10): 1 + 2
+
+- `cdfs_mount` passes `cache_blocks = 32` (`CDFS_CACHE_BLOCKS`). The slab is
+  67 596 bytes = 17 pages, and read-ahead stays on. The per-entry fallback
+  stays in place: if the slab fails it costs 32 × 2 non-contiguous pages.
+- The kernel arm of `odfs/alloc.h` passes `KM_NOSLEEP` when the kmem request
+  is over 4096 bytes. The 6 648-byte `cvfs` `kmem_zalloc` does the same.
+- Harness, r6d, 8 cycles at 32 blocks (`kmprof image.iso 8 32`): every cycle
+  ends at `live=0`, the largest request is 67 596 bytes, and the peak is 26
+  oversize pages (22 after mount, 24 after the walk). At 128 blocks it was
+  264 204 bytes and 76 pages.
+- Option 3 is not applied. With `CDFS_RDBUF` at 4096, an aligned read sends
+  2 sectors per SCSI command instead of 4. The 8 KiB staging buffer is still a
+  `KM_SLEEP` request of 2 pages, held only for one `read(2)`.
+
 ## 5. Reproducer on the box (Bench)
 
 Get the symbol addresses from the kernel that is actually booted. On the host,
