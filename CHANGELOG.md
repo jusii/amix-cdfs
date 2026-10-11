@@ -1,3 +1,10 @@
+## 2026-10-11 — the Km_OsizeWanted mount wedge: block cache 32, never sleep on oversize kmem (6b16d68, af55633)
+
+The kernel block cache shrinks from 128 to 32 entries (slab 264,204 -> 67,596 B, 65 -> 17 contiguous pages) and
+oversize kmem requests use KM_NOSLEEP, so a fragmented sptmap gives ENOMEM instead of an unkillable sleep at PZERO.
+libcdfskern.o md5 694a6e147e6ac418a9f604a16b0636cb. Audited 2026-10-11 (disassembly diff, ASan, fault injection): no
+memory-safety change; one 2 KiB leak on a failed meta grow under NOSLEEP remains (upstream core, post-release).
+
 ## 2026-10-03 — CD-07: reads spanning 4 KiB are never short before EOF (db71e18..1403437)
 
 Regression test for the ftpd truncation finding: a read spanning a 4 KiB boundary returns the full count until EOF,
