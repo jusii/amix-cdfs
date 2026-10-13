@@ -8,6 +8,7 @@ on:
 
 jobs:
   build-and-test:
+    if: github.repository == 'reinauer/ODFileSystem'
     runs-on: ubuntu-latest
     container: stefanreinauer/amiga-gcc:gcc-v13.4
 
@@ -60,6 +61,7 @@ jobs:
           if-no-files-found: error
 
   build-amigaos4:
+    if: github.repository == 'reinauer/ODFileSystem'
     runs-on: ubuntu-latest
     container: stefanreinauer/amigappc-gcc
 
