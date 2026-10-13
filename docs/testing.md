@@ -66,7 +66,8 @@ test_handler CD0:some/deep/directory REL=///sibling
 test_handler CD0:CDDA/Track01.wav FILE=CD0:CDDA/Track01.wav
 ```
 
-The AMIX (SVR4/m68k) arms need the `gcc-cross-amix` toolchain
+The AMIX (SVR4/m68k) arms need the
+[gcc-cross-amix](https://github.com/jusii/gcc-cross-amix) toolchain
 (`m68k-cbm-sysv4-gcc`) and are **not built in CI**:
 
 ```

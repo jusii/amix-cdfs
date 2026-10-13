@@ -20,6 +20,7 @@ env:
 
 jobs:
   build-amigaos3:
+    if: github.repository == 'reinauer/ODFileSystem'
     name: Build AmigaOS 3 Aminet upload
     runs-on: ubuntu-latest
     container: stefanreinauer/amiga-gcc:gcc-v13.4
@@ -70,6 +71,7 @@ jobs:
           if-no-files-found: error
 
   build-amigaos4:
+    if: github.repository == 'reinauer/ODFileSystem'
     name: Build AmigaOS 4 Aminet upload
     runs-on: ubuntu-latest
     container: stefanreinauer/amigappc-gcc
@@ -131,6 +133,7 @@ jobs:
           if-no-files-found: error
 
   publish:
+    if: github.repository == 'reinauer/ODFileSystem'
     name: Upload to Aminet
     needs:
       - build-amigaos3

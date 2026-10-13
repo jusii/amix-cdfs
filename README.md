@@ -1,12 +1,30 @@
-# ODFileSystem
+# amix-cdfs — ODFileSystem with an AMIX (SVR4/m68k) port
 
-[![Coverity](https://img.shields.io/coverity/scan/33023.svg)](https://scan.coverity.com/projects/33023)
+> **This is an independent fork of [reinauer/ODFileSystem](https://github.com/reinauer/ODFileSystem)**
+> by Stefan Reinauer and contributors, maintained by Jussi Alanärä. It adds **AMIX** —
+> Commodore's SVR4 UNIX for the Amiga (68030, and 68040/68060 kernels) — as a target
+> beside AmigaOS 3/4: a userspace build (`make amix`: `libodfs.a`, `imginfo`/`imgls`/`imgcat`,
+> the SVR4 `mount` helper) and an in-kernel read-only filesystem (`make amix-kernel`,
+> mounted with `mount -F cdfs`). Everything AMIX-specific lives in `platform/amix/`,
+> `platform/amix-kernel/` and `#if ODFS_PLATFORM_AMIX*` branches; the AmigaOS handler and
+> host builds are unchanged.
+>
+> It is **not** an upstream-merged tree: it forked at upstream `00ae148` (2026-07-06) and
+> does not carry upstream's later commits (see [docs/upstream-sync.md](docs/upstream-sync.md)).
+> For AmigaOS use, get ODFileSystem from upstream. Report AMIX issues here, not upstream.
+> Trademark notes are in [NOTICE](NOTICE).
+
+The original README follows, with the AMIX chapter added.
+
+---
+
+## ODFileSystem
 
 ODFileSystem is a read-only optical-disc filesystem driver for Amiga systems. It is implemented as an AmigaDOS handler frontend with clean backend plugins for the various optical-disc formats it supports, allowing it to mount and browse CD-ROM, DVD, Blu-ray, and image-based media.
 
 The project also includes host-side tools and tests so most parser and cache logic can be developed and validated outside an Amiga environment.
 
-Beside the AmigaDOS handler, the same core builds for AMIX — Commodore's SVR4/m68k UNIX — where it runs as an in-kernel filesystem mounted with `mount -F cdfs`. See [Building for AMIX](#building-for-amix-svr4m68k).
+In this fork, the same core also builds for AMIX — Commodore's SVR4/m68k UNIX — where it runs as an in-kernel filesystem mounted with `mount -F cdfs`. See [Building for AMIX](#building-for-amix-svr4m68k).
 
 ## Purpose
 
@@ -382,12 +400,14 @@ and write to their own build directories.
 
 ### Toolchain
 
-Both arms cross-compile with `m68k-cbm-sysv4-gcc` from the `gcc-cross-amix`
-toolchain — GCC **2.7.2.3**, the period compiler. That is why the shared
+Both arms cross-compile with `m68k-cbm-sysv4-gcc` from the
+[gcc-cross-amix](https://github.com/jusii/gcc-cross-amix) toolchain — GCC
+**2.7.2.3**, the period compiler. That is why the shared
 `core/` and `backends/` code is kept C89-clean: no `for`-loop initial
 declarations, no declarations after statements.
 
-The Makefile looks for the toolchain under `/opt/amix-cross`. Point it
+The Makefile looks for the toolchain under `/opt/amix-cross`, that build's
+default install prefix. Point it
 elsewhere with `AMIX_CROSS_PREFIX`, or override the individual tools:
 
 ```sh
@@ -417,15 +437,23 @@ edited. The whole body is gated on `ODFS_PLATFORM_AMIX` /
 ### Getting the kernel filesystem into a kernel
 
 `make amix-kernel` produces a relocatable object, not a loadable module: AMIX
-has no loadable filesystems. Two further steps are needed, and **neither
-happens in this repository**:
+has no loadable filesystems. The object has to be built into a kernel, and
+this repository's Makefile does not do that step. In the stock `/usr/sys`
+kernel tree it takes three edits and a relink:
 
-1. a `cdfs` row in the kernel's static `vfssw[]` table, staged through
-   `fstypes.conf`, and
-2. a whole-kernel relink with `libcdfskern.o` in it.
+1. install `libcdfskern.o` as `fs/cdfs/exp` and add `cdfs/exp` to
+   `OPT_SUBEXP` in `fs/Makefile`;
+2. in `master.d/filesys.c`, declare `extern int cdfsinit();` and add the row
+   `{ "cdfs", cdfsinit, 0, 0 }` to the static `vfssw[]` table;
+3. put the cross toolchain's `libgcc.a` on the kernel's final `ld` line, so the
+   64-bit helpers the object leaves undefined (`__udivdi3`, `__umoddi3`,
+   `__lshrdi3`) resolve — the stock kernel carries no `libgcc`;
 
-Both are done by `amix-kerntools`, which owns the `fstypes.conf` staging and the
-kernel-assembly harness.
+then relink the kernel, install it as `/stand/unix` and boot it. The general kernel rebuild procedure is
+described in the AMIX grimoire,
+[Building & Installing a Kernel](https://github.com/jusii/grimoire-amix/blob/master/docs/drivers/kernel-build.md).
+The scripted kernel-integration harness this port was validated with is not
+published yet.
 
 ### Mounting
 

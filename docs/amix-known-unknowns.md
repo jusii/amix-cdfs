@@ -10,13 +10,12 @@ and, once settled, how. A resolved entry is kept here (marked RESOLVED, with its
 evidence chain intact) rather than deleted: the record of *how* a mechanism was
 finally pinned down is worth as much as the answer.
 
-**Sibling repositories referenced below.** The AMIX port depends on two
-repositories that are not this one, and several commits and scripts cited here
-live in them rather than in the ODFileSystem tree: **`gcc-cross-amix`** (the
-`m68k-cbm-sysv4` cross toolchain — compiler, binutils, `libgcc`) and
-**`amix-kerntools`** (kernel assembly, the whole-kernel link, and the on-metal
-validation harness). Paths and hashes are qualified with the owning repository
-wherever they appear.
+**Other repositories referenced below.** The AMIX port depends on work outside
+this tree: the **[gcc-cross-amix](https://github.com/jusii/gcc-cross-amix)**
+`m68k-cbm-sysv4` cross toolchain (compiler, binutils, `libgcc`), and an external
+kernel-integration and on-metal validation harness (kernel assembly, the
+whole-kernel link, the metal test cycle) that is not published. Commits cited
+from the toolchain are qualified with its name wherever they appear.
 
 ---
 
@@ -80,8 +79,9 @@ inline-asm `udiv_qrnnd` path was never compiled in, because the libgcc build car
 no `-m68020`. So the fault lived in the helpers themselves, identically, wherever
 they were linked.
 
-**Fix:** commit `984192a` in the **`gcc-cross-amix`** toolchain repository (not
-this one) — an assembler wrapper that rewrites the mis-encoded forms to
+**Fix:** commit `984192a` in the
+**[gcc-cross-amix](https://github.com/jusii/gcc-cross-amix)** toolchain
+repository (not this one) — an assembler wrapper that rewrites the mis-encoded forms to
 `divsl.l` / `divul.l`; `libgcc.a` rebuilt 2026-07-21.
 
 ### Before / after on the same machine
@@ -125,10 +125,9 @@ the identical fix. The assembler encoding did it.
 
 ### Full gate
 
-**`amix-kerntools`**' `tools/hw-ops/validate-metal.sh --expect-sum 00961
---cycles 5` = **PASS**: mount, byte-identical CD reads vs `test_rr.iso` host
-truth, DMA canary clean 5/5. (That script lives in `amix-kerntools`, which owns
-the metal harness — there is no `tools/hw-ops/` in this repository.)
+The on-metal gate (an external harness, not part of this repository), run
+against the kernel with `sum -r` 00961 for 5 cycles = **PASS**: mount,
+byte-identical CD reads vs `test_rr.iso` host truth, DMA canary clean 5/5.
 
 ### Hypotheses considered, and how each resolved
 

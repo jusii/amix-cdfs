@@ -631,7 +631,8 @@ endif
 # a bash wrapper that already bakes in --sysroot and the crt/libc link,
 # so no -sysroot flag is needed here.
 
-# Root of the gcc-cross-amix toolchain (m68k-cbm-sysv4). Override it if the
+# Root of the gcc-cross-amix toolchain (m68k-cbm-sysv4,
+# https://github.com/jusii/gcc-cross-amix). Override it if the
 # toolchain lives elsewhere:  make amix AMIX_CROSS_PREFIX=/path/to/amix-cross
 AMIX_CROSS_PREFIX ?= /opt/amix-cross
 AMIX_CC     ?= $(AMIX_CROSS_PREFIX)/bin/m68k-cbm-sysv4-gcc

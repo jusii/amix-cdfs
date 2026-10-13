@@ -69,7 +69,7 @@
  * Per-request transfer cap, in BYTES. read_sectors chunks the requested
  * range so no single sdcom exceeds this.
  *
- * ONE SECTOR (2048). Bench evidence: single-sector reads are correct (the PVD,
+ * ONE SECTOR (2048). Hardware evidence: single-sector reads are correct (the PVD,
  * every mount read, and a direct cache-bypassing read all return good data), but a
  * multi-sector request — the block cache's read-ahead issues an 8-sector
  * (16 KB) DMA into one buffer, and file reads stream multiple sectors — comes
@@ -113,7 +113,7 @@ typedef struct amix_kern_ctx {
  * completes a request by calling (*cp->intr)(cp) with the sdcom pointer, so
  * the completion handler casts that pointer straight back to this struct.
  *
- * LIFETIME/MAPPING CONTRACT (the P5.4 remount-cycle panic): a request handed
+ * LIFETIME/MAPPING CONTRACT (the remount-cycle panic): a request handed
  * to sdqueue() MUST live in GLOBALLY-MAPPED kernel memory — kmem heap or
  * statics — NEVER on the caller's kernel stack. On AMIX the kernel stack
  * lives in the per-process u-area window (a fixed virtual range, ~0x40001xxx,
@@ -124,10 +124,10 @@ typedef struct amix_kern_ctx {
  * then resolves into THAT process's stack. The ISR reads cp->next, writes
  * cp->okay/cp->status into the victim's stack, and jumps through a garbage
  * cp->intr (a3091intr case 0: `moveal %a2@(36),%a0; jsr %a0@`) — the
- * KERNEL FAULT psw=0x2200 wild-pc panic in an unrelated process (bench:
- * flopd blocked in fdopen; the P5.4 card-0 repro). Every stock client obeys
+ * KERNEL FAULT psw=0x2200 wild-pc panic in an unrelated process (seen as
+ * flopd blocked in fdopen; the card-0 repro). Every stock client obeys
  * this contract with permanent sdcoms (dd.c: ddtab[][].com; scsi.c gsioctl: a
- * file-static); the same class was proven once before on metal as the T2.P3
+ * file-static); the same class was proven once before on metal as an earlier
  * mount panic (z3660scsi's then timeout()-deferred completion dereferencing a
  * dead stack sdcom). A purely synchronous in-context driver (today's
  * z3660scsi) never dereferences cross-context — which is why card 1 on the
@@ -163,7 +163,7 @@ static odfs_err_t amix_kern_submit(amix_kern_ctx_t *ctx,
      * see the amix_kern_req_t contract comment above. The heap block is
      * mapped identically in every process context, so the HBA driver's queue
      * links and its (possibly foreign-context) completion ISR always
-     * dereference the real request — a stack `req` here was the P5.4
+     * dereference the real request — a stack `req` here was the
      * remount-cycle wild-pc panic. The sleep loop below still keeps the
      * request alive for the whole transaction; it is freed only after the
      * completion handler has fired.

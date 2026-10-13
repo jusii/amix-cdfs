@@ -6,18 +6,18 @@ cdfs object from `b383d14`): after about eight `mount -F cdfs 1,5 /cdrom` /
 `mount -F cdfs` slept forever on WCHAN `0x081411d0` = `&Km_OsizeWanted`.
 
 **Short version.** cdfs does not leak: every allocation is freed on umount and
-on every error path, and 8 host mount/walk/umount cycles over the r6d disc end
-at 0 live allocations. The wedge comes from one large request. Each mount asks
-kmem for a **264 204-byte block** (the block-cache slab), which is **65
-contiguous 4 KiB pages of `sptmap`**. Stock kmem cannot always satisfy that,
+on every error path, and 8 host mount/walk/umount cycles over the Amix 2.1
+install CD image (r6d, 2026-10-08) end at 0 live allocations. The wedge
+comes from one large request. Each mount asks kmem for a **264 204-byte
+block** (the block-cache slab), which is **65 contiguous 4 KiB pages of
+`sptmap`**. Stock kmem cannot always satisfy that,
 and it then sleeps uninterruptibly until somebody frees an oversize block at
 least that large. No other subsystem allocates blocks that large, so the sleep
 never ends.
 
 ## 1. How the stock kmem handles a request over 4096 bytes
 
-Read from the 68060 kernel (`tmp/2026-10-07-r6b/scratch/unix-diag`,
-`kmem_alloc` at `.text+0x41fa8`, `kmem_free` at `+0x4243a`, `sptalloc` at
+Read from the disassembly of the 68060 kernel KD060-ZI-CD-NR (`kmem_alloc` at `.text+0x41fa8`, `kmem_free` at `+0x4243a`, `sptalloc` at
 `+0xa8bb6`). It matches the SVR4.0 `kma.c`:
 
 - `size <= 256`: small pool. `size <= 4096` (`MAXABIG`): big (buddy) pool.
@@ -34,9 +34,9 @@ Read from the 68060 kernel (`tmp/2026-10-07-r6b/scratch/unix-diag`,
   **only when the freed block is at least `Km_OsizeWanted` bytes**.
 
 `sptmap` is small. It is the 4 MiB arena `[syssegs, kvsegmap)`, shared with
-`page[]` and the u-areas (see grimoire `how-it-works/ram-ceiling.md`). On the
-128 MB KD060 line about **500–549 pages are free** (amix-kerntools CHANGELOG,
-2026-09-27/28). Other users take pieces of it and give them back: u-areas,
+`page[]` and the u-areas (see the AMIX grimoire,
+[ram-ceiling.md](https://github.com/jusii/grimoire-amix/blob/master/docs/how-it-works/ram-ceiling.md)).
+Measured on the 128 MB KD060 kernel line, about **500–549 pages are free**. Other users take pieces of it and give them back: u-areas,
 kmem pool pages (4 KiB / 16 KiB, released only when a pool is fully idle),
 physio maps for raw I/O, and STREAMS. Because the map is first-fit, short
 long-lived allocations end up inside the holes that freed long runs leave
@@ -103,11 +103,11 @@ That is about 296 KiB, or 13–15 % of the free `sptmap`.
   `malloc`/`calloc`/`free` around the portable core, maps each request onto
   the kernel-arm kmem cost, and runs mount → full walk (readdir, lookup, 8 KiB
   reads of all 161 files / 301 177 347 bytes) → umount over
-  `amix21-install-public-full-r6d-20261008.iso`. All 8 cycles end with
+  the Amix 2.1 install CD image (r6d, 2026-10-08). All 8 cycles end with
   `live=0 bytes=0 oversize_live_pages=0`. There are 26 oversize requests per
   cycle, the peak is 76 oversize pages, and the largest request is 264 204
   bytes.
-- **Bench.** The second boot wedged on the **second** cdfs mount since boot.
+- **On the box.** The second boot wedged on the **second** cdfs mount since boot.
   One earlier mount holds and returns at most 72–74 pages, far below the
   500-odd free pages. Running out in that boot needs `sptmap` to fragment, not
   cdfs to leak. Between the two mounts that boot ran 64 KB raw writes (physio
@@ -116,8 +116,8 @@ That is about 296 KiB, or 13–15 % of the free `sptmap`.
 
 ## 4. Fix options
 
-None of these is a missing free, so none is the one obvious local change. The
-choice is yours. They are listed by how much they help:
+None of these is a missing free, so none is the one obvious local change.
+They are listed by how much they help:
 
 1. **Shrink the kernel block cache.** Do it in `cdfs_mount` (platform only):
    build `odfs_mount_opts_default()` opts, set `cache_blocks`, and pass them to
@@ -162,7 +162,7 @@ until reboot.
   2 sectors per SCSI command instead of 4. The 8 KiB staging buffer is still a
   `KM_SLEEP` request of 2 pages, held only for one `read(2)`.
 
-## 5. Reproducer on the box (Bench)
+## 5. Reproducer on the box
 
 Get the symbol addresses from the kernel that is actually booted. On the host,
 run `nm <kernel> | egrep ' (sptmap|Km_OsizeWanted)$'`. For KD060-ZI-CD-NR,

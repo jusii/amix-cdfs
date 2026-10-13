@@ -4,7 +4,7 @@
  * Defines cdfs_vfsops POSITIONALLY, in the EXACT slot order of struct vfsops in
  * <sys/vfs.h> (vfs_mount, vfs_unmount, vfs_root, vfs_statvfs, vfs_sync,
  * vfs_vget, vfs_mountroot, vfs_swapvp), plus cdfsinit — the vsw_init routine a
- * later kerntools step wires into the static vfssw[] table. The op vector is a
+ * later kernel-build step wires into the static vfssw[] table. The op vector is a
  * K&R `int (*)()` array with zero compile-time checking, so the VFS_* call
  * macros in <sys/vfs.h> are the ABI and each function matches them exactly.
  *
@@ -487,7 +487,7 @@ static int cdfs_swapvp(struct vfs *vfsp, struct vnode **vpp, char *nm)
  *
  * The vfssw[] row it locates,
  *   { "cdfs", cdfsinit, 0, 0 }
- * is injected by the kerntools step (out of scope). vfssw[]/nfstype come from
+ * is added by the kernel-build step (out of scope). vfssw[]/nfstype come from
  * <sys/vfs.h>; strcmp is the kernel's own copy (declared in <string.h>). All
  * three stay undefined externs in libcdfskern.o, resolved at the kernel link.
  */

@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   coverity:
+    if: github.repository == 'reinauer/ODFileSystem'
     runs-on: ubuntu-latest
     container: stefanreinauer/amiga-gcc:gcc-v13.4
 

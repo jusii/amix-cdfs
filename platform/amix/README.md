@@ -179,7 +179,8 @@ before the cause of one of them was found. Each verdict now has its own arm in
 
 ### Building
 
-Cross-build (the normal path — needs the `gcc-cross-amix` toolchain):
+Cross-build (the normal path — needs the
+[gcc-cross-amix](https://github.com/jusii/gcc-cross-amix) toolchain):
 
 ```sh
 make amix-mount          # just the helper  → build/amix/mount
@@ -220,5 +221,5 @@ umount /cdrom                   # … and this really unmounts it, entry and all
 (`mount` reporting `/cdrom on /cdrom` rather than the `0,2` unit is expected — see
 *The `special` field is the mount point* above.)
 
-The `cdfs` row in the kernel's `vfssw[]` is injected separately, by
-`amix-kerntools`' `fstypes.conf` staging.
+The `cdfs` row in the kernel's `vfssw[]` is added separately, when the kernel
+is built; see [Getting the kernel filesystem into a kernel](../../README.md#getting-the-kernel-filesystem-into-a-kernel).

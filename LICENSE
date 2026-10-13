@@ -1,4 +1,6 @@
 Copyright (c) 2026 Stefan Reinauer
+Copyright (c) 2026 Jussi Alanärä (AMIX port: platform/amix, platform/amix-kernel,
+                                  and the AMIX-guarded parts of the shared tree)
 All rights reserved.
 
 Redistribution and use in source and binary forms, with or without

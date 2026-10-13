@@ -65,15 +65,19 @@ same freestanding trap `platform/amiga/os4/freestanding.o` guards against.
 `build/amix-kernel/libcdfskern.o` on its own does nothing. Two further steps are
 required, and **this repository performs neither**:
 
-1. **A `cdfs` row in the kernel's static `vfssw[]` table**, of the shape
-   `{ "cdfs", cdfsinit, 0, 0 }`, staged through `fstypes.conf`.
-2. **A whole-kernel relink** with `libcdfskern.o` among the objects, which is
-   what resolves all the externs `ld -r` left open.
+1. **A `cdfs` row in the kernel's static `vfssw[]` table**
+   (`master.d/filesys.c` in the stock `/usr/sys` tree), of the shape
+   `{ "cdfs", cdfsinit, 0, 0 }`, with an `extern int cdfsinit();` above it.
+2. **A whole-kernel relink** with `libcdfskern.o` among the objects (installed
+   as `fs/cdfs/exp` and listed in `OPT_SUBEXP` in `fs/Makefile`) and the cross
+   toolchain's `libgcc.a` on the final `ld` line. That link is what resolves all
+   the externs `ld -r` left open.
 
-Both belong to **`amix-kerntools`** — its `fstypes.conf` staging and its
-kernel-assembly harness. This is the step nobody can guess from the tree, so it
-is stated here rather than implied: building `cdfs` and installing `cdfs` are
-two different repositories' jobs.
+This is the step nobody can guess from the tree, so it is stated here rather
+than implied: building `cdfs` and building it into a kernel are separate jobs.
+The top-level [README](../../README.md#getting-the-kernel-filesystem-into-a-kernel)
+lists the steps; the scripted integration harness this port was validated with
+is not published yet.
 
 ## The four hard contracts
 
@@ -170,8 +174,8 @@ violator. Each request is now a `kmem`-heap allocation — globally mapped in
 every context — freed only after the completion handler has fired.
 
 A synchronous, in-context driver (today's `z3660scsi`) never dereferences
-cross-context, which is why bench card 1 survived what card 0 died of. Do not
-read that as the rule being optional.
+cross-context, which is why the z3660scsi card survived what the a3091 card
+died of. Do not read that as the rule being optional.
 
 ## Mount refusals, and what each errno means
 
@@ -281,7 +285,7 @@ must find **zero** candidates:
 
 ```sh
 m68k-cbm-sysv4-objdump -d build/amix-kernel/libcdfskern.o > cdfs.lst
-scan060.py cdfs.lst            # amix-040-060-port test-tools/scan060.py
+scan060.py cdfs.lst            # test-tools/scan060.py in asokero/amix-040-060-port
 ```
 
 A new division by a constant or a widening multiply in code that reaches the
