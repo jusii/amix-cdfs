@@ -1,3 +1,10 @@
+## 2026-10-13 — public repository (github.com/jusii/amix-cdfs), full history kept (84b120c)
+
+README fork notice, NOTICE with Amiga Corporation's wording, LICENSE BSD-2-Clause with a second copyright
+line; upstream's release, Aminet and Coverity workflows run only in reinauer/ODFileSystem; the internal
+rebase plan replaced by docs/upstream-sync.md. Clean amix-kernel build unchanged
+(libcdfskern.o md5 694a6e147e6ac418a9f604a16b0636cb).
+
 ## 2026-10-11 — the Km_OsizeWanted mount wedge: block cache 32, never sleep on oversize kmem (6b16d68, af55633)
 
 The kernel block cache shrinks from 128 to 32 entries (slab 264,204 -> 67,596 B, 65 -> 17 contiguous pages) and
