@@ -1,3 +1,9 @@
+## 2026-10-13 — CI: upstream's "ODFileSystem CI" workflow runs only in reinauer/ODFileSystem (748b0d6)
+
+ci-build.yml gets the same job-level repository guard as aminet-release, release and coverity, so none of
+upstream's workflows run in jusii/amix-cdfs. Known item for any upstream PR: the shared-core changes made
+for the Amix kernel grow the AmigaOS 3 ROM-profile handler to 32772 bytes against its 32768 limit.
+
 ## 2026-10-13 — public repository (github.com/jusii/amix-cdfs), full history kept (84b120c)
 
 README fork notice, NOTICE with Amiga Corporation's wording, LICENSE BSD-2-Clause with a second copyright
